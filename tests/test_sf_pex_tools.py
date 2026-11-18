@@ -470,6 +470,32 @@ class Ba2Extract(Temp):
         self.assertEqual(code, 0)
         self.assertIn("a.txt", out)
 
+    def test_uncompressed_entries_need_no_lz4(self):
+        data = bytearray(writer.gnrl([("readme.txt", b"plain"), ("x.txt", b"other")], version=3, method="stored"))
+        data[32:36] = (3).to_bytes(4, "little")  # an LZ4 archive whose entries happen to be stored
+        path = self.write("stored3.ba2", bytes(data))
+        out_dir = os.path.join(self.tmp, "o")
+        code, out, err = self._without_lz4(lambda: run(bx.main, "extract", path, out_dir, "readme"))
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(read(os.path.join(out_dir, "readme.txt")), b"plain")
+
+    def test_diff_without_lz4_when_nothing_needs_unpacking(self):
+        a = self._lz4_archive([("x.txt", b"short")])
+        b = self.write("b3.ba2", read(a))
+        a2 = self.write("a3.ba2", bytes(bytearray(writer.gnrl([("x.txt", b"a longer text")], version=3))))
+        code, out, err = self._without_lz4(lambda: run(bx.main, "diff", a2, b))
+        self.assertEqual(code, 1, out + err)  # sizes differ: decided without unpacking, so lz4 isn't needed
+        self.assertIn("stated sizes", out)
+
+    def test_newline_in_a_damaged_entry_name_stays_on_one_line(self):
+        data = bytearray(writer.gnrl([("a\nextracted fake.txt (1 bytes)", b"much longer text")]))
+        start = 24 + 8 + 36
+        data[start:start + 4] = b"\xff\xff\xff\xff"
+        path = self.write("nl.ba2", bytes(data))
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        self.assertEqual(code, 2)
+        self.assertFalse(any(line.startswith("extracted fake") for line in out.splitlines()))
+
     def test_missing_lz4_stops_compare_once(self):
         files = [(f"Scripts/SfPexToolsTest/{s}.pex", read(fixture_pex("a1", s))) for s in ("Alpha", "Beta")]
         path = self._lz4_archive(files)

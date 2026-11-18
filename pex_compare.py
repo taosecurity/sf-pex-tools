@@ -324,7 +324,8 @@ class Source:
         if os.path.isfile(path) and path.lower().endswith(".ba2"):
             self.archive = ba2_extract.Archive(path)
             try:
-                self.archive.check_can_unpack()  # a missing lz4 stops the run before any script is compared
+                # A missing lz4 stops the run before any script is compared, if any script needs it.
+                self.archive.check_can_unpack([e for e in self.archive.entries if e["name"].lower().endswith(".pex")])
                 for e in self.archive.entries:
                     if e["name"].lower().endswith(".pex"):
                         self._add(_key(e["name"]), f"{path}:{e['name']}", lambda e=e: self.archive.read(e),
@@ -400,7 +401,7 @@ def compare(a_path, b_path, ignore_debug, as_json):
             try:
                 la = listing(fa[key][1](), fa[key][0], ignore_debug)
                 lb = listing(fb[key][1](), fb[key][0], ignore_debug)
-            except (PexError, ba2_extract.EntryError, OSError) as e:  # one script; a missing lz4 stops the run once
+            except (PexError, ba2_extract.EntryError, OSError) as e:  # this one script is damaged or unreadable
                 results.append({"script": shown, "status": "unreadable", "error": str(e)})
                 log(f"unreadable {shown}: {e!r}")
                 status = 2
