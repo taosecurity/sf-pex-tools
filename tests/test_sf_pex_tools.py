@@ -441,6 +441,24 @@ class Ba2Extract(Temp):
         self.assertTrue(os.path.isfile(os.path.join(out_dir, "ok.txt")))
         self.assertFalse(os.path.exists(os.path.join(out_dir, "deep")))  # no empty folders left
 
+    def test_missing_lz4_stops_extract_once_with_the_fix(self):
+        data = bytearray(writer.gnrl([("a.txt", b"x" * 50), ("b.txt", b"y" * 50)], version=3))
+        data[32:36] = (3).to_bytes(4, "little")  # say LZ4: the reader must ask for the lz4 package
+        path = self.write("needlz4.ba2", bytes(data))
+        saved = {k: sys.modules.get(k) for k in ("lz4", "lz4.block")}
+        sys.modules["lz4"] = sys.modules["lz4.block"] = None  # import fails as if not installed
+        try:
+            code, out, err = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+        self.assertEqual(code, 2)
+        self.assertEqual(err.count("lz4==4.4.5"), 1)
+        self.assertNotIn("skipped", out)
+
     def test_dot_parts_are_the_same_name_for_every_command(self):
         path = self.write("dot.ba2", writer.gnrl([("Scripts/./Foo.pex", read(fixture_pex("a1", "Alpha")))]))
         out_dir = os.path.join(self.tmp, "o")

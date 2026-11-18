@@ -96,8 +96,9 @@ whether lz4 is installed).
   (`extracted ...` or `skipped (...)` with the reason: already there, unsafe name, name stored twice, a
   file/folder clash, or can't unpack it). Without `--force` it never replaces a file; with `--force` it swaps in a new file, so a
   hard link is replaced, never written through. `diff` prints counts and names of new, removed and changed
-  files; a file whose stated size changed is listed with `stated sizes` and is not unpacked. Errors go to
-  stderr, starting `error:`, and name the file and the fix.
+  files; a file whose stated size changed is listed with `stated sizes` and is not unpacked. Errors that stop
+  the run go to stderr, starting `error:`, and name the file and the fix. A single damaged entry during
+  `extract` is a `skipped (can't unpack it: ...)` line on stdout naming the entry, and the run goes on.
 - **Exit codes:** `pex_compare.py`: 0 all equivalent, 1 differences, 2 unreadable, a `DUPLICATE` name, or bad
   arguments.
   `ba2_extract.py`: 0 OK (`diff`: identical), 1 `diff` found differences, 2 unreadable archive (`extract`:

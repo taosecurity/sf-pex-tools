@@ -60,7 +60,11 @@ def log(msg):
 
 
 class BA2Error(Exception):
-    pass
+    """The archive can't be used (stops the run), or a missing package such as lz4."""
+
+
+class EntryError(BA2Error):
+    """One stored file is damaged or too big; the rest of the archive is fine."""
 
 
 # ---------------------------------------------------------------- finding the game's Data folder
@@ -229,23 +233,23 @@ class Archive:
             try:
                 out = lz4.block.decompress(raw, uncompressed_size=size)
             except Exception as e:  # lz4 raises its own LZ4BlockError
-                raise BA2Error(f"{self.path}: {name} won't unpack (LZ4: {e}; damaged)")
+                raise EntryError(f"{self.path}: {name} won't unpack (LZ4: {e}; damaged)")
         else:
             d = zlib.decompressobj()
             try:
                 out = d.decompress(raw, size)
             except zlib.error as e:
-                raise BA2Error(f"{self.path}: {name} won't unpack (zlib: {e}; damaged)")
+                raise EntryError(f"{self.path}: {name} won't unpack (zlib: {e}; damaged)")
             if d.unconsumed_tail:
-                raise BA2Error(f"{self.path}: {name} unpacks to more than its stated {size} bytes (damaged)")
+                raise EntryError(f"{self.path}: {name} unpacks to more than its stated {size} bytes (damaged)")
         if len(out) != size:
-            raise BA2Error(f"{self.path}: {name} unpacked to {len(out)} bytes, not the stated {size} (damaged)")
+            raise EntryError(f"{self.path}: {name} unpacked to {len(out)} bytes, not the stated {size} (damaged)")
         return out
 
     def read(self, e):
         """The file's full unpacked bytes (a texture as a complete .dds)."""
         if e["size"] > _MAX_SIZE:
-            raise BA2Error(f"{self.path}: {e['name']} is {e['size'] // 1048576} MB unpacked, over the "
+            raise EntryError(f"{self.path}: {e['name']} is {e['size'] // 1048576} MB unpacked, over the "
                            f"--max-size limit of {_MAX_SIZE // 1048576} MB. Raise it with --max-size <MB>.")
         parts = [dds_header(e)] if e["dx10"] else []
         for off, packed, size in e["chunks"]:
@@ -331,6 +335,7 @@ def cmd_extract(archive, out_dir, needle, force):
     base = os.path.realpath(out_dir)
     umask = _umask() if force and os.name == "posix" else 0  # read once, before any file is written
     n = skipped = damaged = 0
+    checked = set()  # folders known to be folders (for _file_in_the_way)
     with Archive(archive) as a:
         for e in a.entries:
             if needle not in e["name"].lower():
@@ -354,22 +359,22 @@ def cmd_extract(archive, out_dir, needle, force):
                 say(f"skipped (already there; use --force to replace it): {path}")
                 skipped += 1
                 continue
-            blocker = _file_in_the_way(base, path)
+            blocker = _file_in_the_way(base, path, checked)
             if blocker:
                 say(f"skipped (the file {blocker} is in the way of its folder): {e['name']!r}")
                 skipped += 1
                 continue
             try:  # before any folder is made, so a damaged entry leaves no empty folders
                 data = a.read(e)
-            except BA2Error as err:  # damaged or over --max-size: skip it, keep going, exit 2 at the end
-                say(f"skipped (can't unpack it: {err})")
+            except EntryError as err:  # this entry is damaged or too big: skip it, keep going, exit 2 at the end
+                say(f"skipped (can't unpack it: {err}): {e['name']!r}")
                 log(f"read failed for {e['name']!r}: {err!r}")
                 damaged += 1
                 continue
             try:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-            except OSError as err:  # a file already sits where one of its folders must go
-                say(f"skipped (a file is in the way of its folder: {err.strerror or err}): {e['name']!r}")
+            except OSError as err:  # permission denied, path too long, or a file appeared meanwhile
+                say(f"skipped (can't make its folder: {err.strerror or err}): {e['name']!r}")
                 log(f"makedirs failed for {path}: {err!r}")
                 skipped += 1
                 continue
@@ -395,15 +400,20 @@ def cmd_extract(archive, out_dir, needle, force):
     return 2 if damaged else 0
 
 
-def _file_in_the_way(base, path):
-    """The first existing file (not folder) between base and path's folder, or None."""
+def _file_in_the_way(base, path, checked):
+    """The first existing file (not folder) between base and path's folder, or None. Folders found to be
+    folders are remembered in `checked`, so entries that share a folder don't check it again."""
     d = os.path.dirname(path)
     rel = os.path.relpath(d, base)
     cur = base
     for part in ([] if rel == "." else rel.split(os.sep)):
         cur = os.path.join(cur, part)
+        if cur in checked:
+            continue
         if os.path.lexists(cur) and not os.path.isdir(cur):
             return cur
+        if os.path.isdir(cur):
+            checked.add(cur)
     return None
 
 
@@ -546,7 +556,8 @@ def main(argv=None):
                         help=f"largest single file to unpack, in MB (default {DEFAULT_MAX_MB})")
     p = _Parser(prog="ba2_extract.py", description="List, extract and compare files in BA2 archives. "
                 "Options go after the command name.",
-                epilog="Exit codes: 0 OK (diff: identical), 1 diff found differences, 2 error.")
+                epilog="Exit codes: 0 OK (diff: identical), 1 diff found differences, 2 error (extract: also when "
+                       "damaged entries were skipped; the others were still extracted).")
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     sub = p.add_subparsers(dest="cmd", metavar="command", parser_class=_Parser)
     s = sub.add_parser("list", parents=[common], help="list stored paths that contain the text")

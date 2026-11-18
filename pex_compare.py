@@ -399,7 +399,7 @@ def compare(a_path, b_path, ignore_debug, as_json):
             try:
                 la = listing(fa[key][1](), fa[key][0], ignore_debug)
                 lb = listing(fb[key][1](), fb[key][0], ignore_debug)
-            except (PexError, ba2_extract.BA2Error, OSError) as e:
+            except (PexError, ba2_extract.EntryError, OSError) as e:  # one script; a missing lz4 stops the run once
                 results.append({"script": shown, "status": "unreadable", "error": str(e)})
                 log(f"unreadable {shown}: {e!r}")
                 status = 2
