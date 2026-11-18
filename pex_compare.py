@@ -19,9 +19,13 @@ comments or blank lines move), --json (compare: machine-readable result), --verb
 --log <file> (log to a file).
 
 Fallout 4 (PEX 3.9) and Starfield (PEX 3.12) scripts. Skyrim's big-endian PEX is not supported.
-The compile time, the source file's modification time and the string-table order are never compared.
-Instruction order inside a function is always compared as written.
-Exit codes: 0 all equivalent, 1 differences found, 2 a file could not be read or bad arguments.
+Never compared: the compile time, the source file's modification time, the string-table order, and where
+and by whom it was built (the source file's folder, the user name and the machine name; `dump` shows them on
+a "# not compared" line). Instruction order inside a function is always compared as written.
+Two files that match one script name (Scripts/X.pex and X.pex, or names differing only in case) are
+reported as DUPLICATE and not compared; the other scripts still are.
+Exit codes: 0 all equivalent, 1 differences found, 2 a file could not be read, a DUPLICATE name, or bad
+arguments.
 It only reads files; it never writes them.
 """
 import argparse
@@ -43,14 +47,11 @@ def _load_ba2():
 
 
 ba2_extract = _load_ba2()
-clean, say = ba2_extract.clean, ba2_extract.say
+say = ba2_extract.say
+log = ba2_extract.log  # one log for both tools, so archive details reach it too
 
 VERSION = "0.1.0"
-
-
-def log(msg):
-    """One log for both tools: ba2_extract holds the log file, so archive details reach it too."""
-    ba2_extract.log(msg)
+IDENT = "ident:"
 
 
 # opcode: (name, fixed argument count, variadic). Variadic ops are followed by an int count and that many args.
@@ -159,9 +160,10 @@ def read_function(r, indent):
     rename = {}
     for _, args in code:
         for a in args:
-            temp = a[len("ident:"):]
-            if a.startswith("ident:::temp") and temp not in rename:
-                rename[temp] = f"::t{len(rename) + 1}"
+            if a.startswith(IDENT + "::temp"):
+                temp = a[len(IDENT):]
+                if temp not in rename:
+                    rename[temp] = f"::t{len(rename) + 1}"
     for lname, _ in sorted(local_list, key=lambda x: (x[1], x[0])):  # temps the code never uses
         if lname.startswith("::temp") and lname not in rename:
             rename[lname] = f"::t{len(rename) + 1}"
@@ -169,7 +171,7 @@ def read_function(r, indent):
     lines = [head] + params
     lines += sorted(f"{indent}local {rename.get(n, n)} : {ty}" for n, ty in local_list)
     for i, (name, args) in enumerate(code):
-        args = ["ident:" + rename.get(a[6:], a[6:]) if a.startswith("ident:") else a for a in args]
+        args = [IDENT + rename.get(a[len(IDENT):], a[len(IDENT):]) if a.startswith(IDENT) else a for a in args]
         lines.append(f"{indent}{i:4d} {name} " + ", ".join(args))
     return lines
 
@@ -311,6 +313,7 @@ class Source:
     def __init__(self, path):
         self.path, self.archive, self.single = path, None, False
         self.scripts = {}
+        self.duplicates = {}  # key -> labels of every file matching that script name
         if os.path.isfile(path) and path.lower().endswith(".ba2"):
             self.archive = ba2_extract.Archive(path)
             try:
@@ -318,7 +321,7 @@ class Source:
                     if e["name"].lower().endswith(".pex"):
                         self._add(_key(e["name"]), f"{path}:{e['name']}", lambda e=e: self.archive.read(e),
                                   _shown(e["name"]))
-            except ValueError:
+            except BaseException:
                 self.archive.close()
                 raise
             log(f"{path}: archive with {len(self.scripts)} script(s) out of {len(self.archive.entries)} files")
@@ -339,10 +342,10 @@ class Source:
 
     def _add(self, key, label, loader, shown):
         """Two scripts that match the same name (Scripts/X.pex and X.pex, or names differing only in case)
-        would hide one another, so that stops the run."""
+        would hide one another, so that name is reported as a duplicate instead of compared."""
         if key in self.scripts:
-            raise ValueError(f"{self.path}: {self.scripts[key][0]} and {label} both match the script name "
-                             f"{shown!r}; compare a folder that holds only one of them")
+            self.duplicates.setdefault(key, [self.scripts[key][0]]).append(label)
+            return
         self.scripts[key] = (label, loader, shown)
 
     def close(self):
@@ -375,6 +378,13 @@ def compare(a_path, b_path, ignore_debug, as_json):
         results, status = [], 0
         for key in sorted(set(fa) | set(fb)):
             shown = (fa.get(key) or fb.get(key))[2]
+            dups = a.duplicates.get(key, []) + b.duplicates.get(key, [])
+            if dups:
+                results.append({"script": shown, "status": "duplicate",
+                                "error": "more than one file matches this name: " + ", ".join(dups)})
+                log(f"duplicate {shown}: {dups}")
+                status = 2
+                continue
             if key not in fa or key not in fb:
                 results.append({"script": shown, "status": "only-in-second" if key not in fa else "only-in-first"})
                 status = max(status, 1)
@@ -406,7 +416,7 @@ def compare(a_path, b_path, ignore_debug, as_json):
                           "counts": counts, "scripts": results}, indent=2))
     else:
         labels = {"same": "same", "different": "DIFFERENT", "only-in-first": "ONLY IN first",
-                  "only-in-second": "ONLY IN second", "unreadable": "UNREADABLE"}
+                  "only-in-second": "ONLY IN second", "unreadable": "UNREADABLE", "duplicate": "DUPLICATE"}
         for r in results:
             say(f"{labels[r['status']]}: {r['script']}" + (f"  ({r['error']})" if "error" in r else ""))
             for line in r.get("diff", []):

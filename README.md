@@ -66,7 +66,13 @@ python pex_compare.py compare "old\MyMod - Main.ba2" "new\MyMod - Main.ba2"
 
 Either side can be a `.ba2`, a folder (it searches every folder below it) or, for one script, a `.pex` file.
 Scripts are matched by their path below `Scripts/`, so a `.ba2` can be compared with your `Data\Scripts` folder or
-your build's output folder.
+your build's output folder. If two files on one side match the same name (say `Scripts\MyMod\X.pex` and a loose
+`MyMod\X.pex`, or names that differ only in case), that name is reported as `DUPLICATE` and not compared, and the
+run ends with exit code 2. The other scripts are still compared.
+
+Where and by whom a script was built isn't compared: the folder of its source file, and the user and machine
+names the compiler can store (Starfield's compiler writes `<SUPPRESSED>`). `dump` shows them on a
+`# not compared` line.
 
 **Show one script's listing** (the text that gets compared):
 
@@ -169,7 +175,7 @@ Options go after the command name.
 |---|---|---|
 | 0 | every script is equivalent (`dump`: it read the script) | it worked (`diff`: the archives hold the same files) |
 | 1 | at least one script differs, or is only on one side | `diff` found new, removed or changed files |
-| 2 | a script or archive couldn't be read, or bad arguments | an archive couldn't be read, or bad arguments |
+| 2 | a script or archive couldn't be read, a `DUPLICATE` name, or bad arguments | an archive couldn't be read (`diff`: also a name stored twice), or bad arguments |
 
 ## Logging
 
@@ -189,8 +195,10 @@ Attach the log when you report a problem.
 
 Archives and scripts from other people are read with care: sizes and offsets are checked against the file,
 unpacking stops at the size the archive states, a file over `--max-size` is refused, stored names that would
-leave the output folder (`..`, drive letters, `:` streams, Windows device names) are skipped, and control
-characters in names are shown as `\xNN`.
+leave the output folder (`..`, drive letters, `:` streams, Windows device names, links inside the output folder
+that point elsewhere) are skipped, and control characters in names are shown as `\xNN`. The game looks names up
+without regard to case, so names an archive stores twice (ignoring case) are marked by `list`, skipped by
+`extract` and stop `diff`.
 
 ## Limits
 

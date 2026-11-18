@@ -119,14 +119,20 @@ class PexCompare(Temp):
         code, out, _ = run(pc.main, "dump", path)
         self.assertIn("# not compared: source path 'Alpha.psc', user 'amy-on-pc-02'", out)
 
-    def test_two_files_matching_one_name_stop_the_run(self):
+    def test_two_files_matching_one_name_are_reported_not_compared(self):
         d = os.path.join(self.tmp, "dup")
-        os.makedirs(os.path.join(d, "Scripts"))
-        shutil.copy(fixture_pex("a1", "Alpha"), os.path.join(d, "Alpha.pex"))
-        shutil.copy(fixture_pex("a2", "Alpha"), os.path.join(d, "Scripts", "Alpha.pex"))
-        code, _, err = run(pc.main, "compare", d, os.path.join(PEX, "a1"))
+        os.makedirs(os.path.join(d, "Scripts", "SfPexToolsTest"))
+        os.makedirs(os.path.join(d, "SfPexToolsTest"))
+        shutil.copy(fixture_pex("a1", "Alpha"), os.path.join(d, "SfPexToolsTest", "Alpha.pex"))
+        shutil.copy(fixture_pex("a2", "Alpha"), os.path.join(d, "Scripts", "SfPexToolsTest", "Alpha.pex"))
+        shutil.copy(fixture_pex("a2", "Beta"), os.path.join(d, "SfPexToolsTest", "Beta.pex"))
+        code, out, _ = run(pc.main, "compare", d, os.path.join(PEX, "a1"))
         self.assertEqual(code, 2)
-        self.assertIn("both match the script name", err)
+        self.assertIn("DUPLICATE: ", out)
+        self.assertIn("more than one file matches this name", out)
+        self.assertIn("same: SfPexToolsTest/Beta.pex", out)
+        code, out, _ = run(pc.main, "compare", d, os.path.join(PEX, "a1"), "--json")
+        self.assertEqual(json.loads(out)["counts"], {"duplicate": 1, "same": 1})
 
     def test_archive_details_reach_the_compare_log(self):
         logf = os.path.join(self.tmp, "c.log")
@@ -330,9 +336,44 @@ class Ba2Extract(Temp):
         self.assertIn("evil\\x1b[31mred.txt", out)
 
     def test_output_folder_at_a_filesystem_root(self):
-        root = os.path.abspath(os.sep)
+        root = os.path.realpath(os.path.abspath(os.sep))
         self.assertEqual(bx.safe_target(root, "a/b.txt"), os.path.join(root, "a", "b.txt"))
-        self.assertIsNone(bx.safe_target(root, "../b.txt") if os.path.dirname(root) != root else None)
+        self.assertIsNone(bx.safe_target(root, "/"))  # nothing left once empty parts go: never the root itself
+
+    def test_link_inside_the_output_folder_pointing_outside_is_refused(self):
+        base = os.path.realpath(os.path.join(self.tmp, "out"))
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(base)
+        os.makedirs(outside)
+        link = os.path.join(base, "link")
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            try:  # Windows without the symlink right: a directory junction needs none
+                import _winapi
+                _winapi.CreateJunction(outside, link)
+            except (ImportError, AttributeError, OSError):
+                self.skipTest("this account can't make symbolic links or junctions")
+        self.assertIsNone(bx.safe_target(base, "link/evil.txt"))
+        self.assertIsNotNone(bx.safe_target(base, "real/ok.txt"))
+
+    def test_extract_skips_names_stored_twice(self):
+        path = self.write("twice.ba2", writer.gnrl([("A.txt", b"1"), ("a.txt", b"2"), ("b.txt", b"3")]))
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        self.assertEqual(code, 0)
+        self.assertIn("1 file(s) extracted, 2 skipped", out)
+        code, out, _ = run(bx.main, "list", path)
+        self.assertEqual(out.count("(name stored more than once)"), 2)
+
+    def test_diff_still_finds_damage_when_sizes_differ(self):
+        good = self.write("g.ba2", writer.gnrl([("x.txt", b"short")]))
+        data = bytearray(writer.gnrl([("x.txt", b"much longer text")]))
+        start = 24 + 8 + 36  # header (version 2) + one record: the packed data starts here
+        data[start:start + 4] = b"\xff\xff\xff\xff"
+        bad = self.write("d.ba2", bytes(data))
+        code, _, err = run(bx.main, "diff", good, bad)
+        self.assertEqual(code, 2)
+        self.assertIn("won't unpack", err)
 
     def test_names_the_console_cannot_show(self):
         out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\n")

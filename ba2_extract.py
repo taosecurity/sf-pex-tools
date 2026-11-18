@@ -202,6 +202,15 @@ class Archive:
         for e in self.entries:
             (n,) = struct.unpack("<H", self._need(2, "name table"))
             e["name"] = self._need(n, "name table").decode("utf-8", "replace").replace("\\", "/")
+        # The game looks names up without regard to case, so two entries whose names differ only in case
+        # are ambiguous: list shows them, extract skips them, diff stops.
+        seen = set()
+        self.duplicates = set()
+        for e in self.entries:
+            k = e["name"].lower()
+            (self.duplicates if k in seen else seen).add(k)
+        if self.duplicates:
+            log(f"{self.path}: {len(self.duplicates)} name(s) stored more than once (ignoring case)")
         for e in self.entries:
             for off, packed, size in e["chunks"]:
                 if off + (packed or size) > self.length:
@@ -279,7 +288,10 @@ def safe_target(base, name):
     for p in parts:
         if p in (".", "..") or ":" in p or p.split(".")[0].lower() in _RESERVED or p != p.rstrip(" ."):
             return None
-    path = os.path.realpath(os.path.join(base, *parts))
+    try:
+        path = os.path.realpath(os.path.join(base, *parts))
+    except (OSError, ValueError):  # e.g. Windows refuses to follow an untrusted junction (error 448)
+        return None
     try:  # commonpath also handles a base that is a drive or filesystem root (D:\ or /)
         inside = path != base and os.path.commonpath([base, path]) == base
     except ValueError:  # different drives
@@ -293,6 +305,8 @@ def cmd_list(archive, needle):
         for e in a.entries:
             if needle in e["name"].lower():
                 extra = f"  {e['w']}x{e['h']} fmt {e['fmt']}" if e["dx10"] else ""
+                if e["name"].lower() in a.duplicates:
+                    extra += "  (name stored more than once)"
                 say(f"{e['size']:>10}  {e['name']}{extra}")
     return 0
 
@@ -303,6 +317,10 @@ def cmd_extract(archive, out_dir, needle, force):
     with Archive(archive) as a:
         for e in a.entries:
             if needle not in e["name"].lower():
+                continue
+            if e["name"].lower() in a.duplicates:
+                say(f"skipped (the archive stores this name more than once, ignoring case): {e['name']!r}")
+                skipped += 1
                 continue
             path = safe_target(base, e["name"])
             if path is None:
@@ -327,14 +345,13 @@ def cmd_extract(archive, out_dir, needle, force):
 
 
 def _by_name(archive, needle):
-    """Matching entries by lower-case name. The game treats names without regard to case, so two entries
-    whose names differ only in case would hide one another: that stops the run."""
+    """Matching entries by lower-case name; a name stored twice (ignoring case) stops the run."""
     out = {}
     for e in archive.entries:
         k = e["name"].lower()
         if needle not in k:
             continue
-        if k in out:
+        if k in archive.duplicates:
             raise BA2Error(f"{archive.path}: two stored files have the name {e['name']!r} (ignoring case); "
                            f"the game loads only one of them")
         out[k] = e
@@ -350,14 +367,13 @@ def cmd_diff(a_path, b_path, needle):
         removed = sorted(a[k]["name"] for k in a.keys() - b.keys())
         changed, same = [], 0
         for k in sorted(a.keys() & b.keys()):
-            if a[k]["size"] != b[k]["size"]:  # different sizes: changed, no need to unpack
-                is_same = False
-            else:
-                is_same = fa.read(a[k]) == fb.read(b[k])
+            # Both are always unpacked, even when the stated sizes differ, so damage is still found.
+            da, db = fa.read(a[k]), fb.read(b[k])
+            is_same = da == db
             if is_same:
                 same += 1
             else:
-                changed.append(f"{b[k]['name']}  ({a[k]['size']} -> {b[k]['size']} bytes)")
+                changed.append(f"{b[k]['name']}  ({len(da)} -> {len(db)} bytes)")
             log(f"compared {k}: {'same' if is_same else 'changed'}")
     for label, items in (("new in B", new), ("removed (only in A)", removed), ("changed", changed)):
         say(f"{label}: {len(items)}")
