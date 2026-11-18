@@ -250,7 +250,7 @@ class Archive:
         else:
             d = zlib.decompressobj()
             try:
-                out = d.decompress(raw, size)
+                out = d.decompress(raw, size or 1)  # 0 would mean "no limit" to zlib; the length check below refuses any byte
             except zlib.error as e:
                 raise EntryError(f"{self.path}: {name} won't unpack (zlib: {e}; damaged)")
             if d.unconsumed_tail:
@@ -319,7 +319,7 @@ def safe_target(base, name):
     if not parts:
         return None
     for p in parts:
-        if p == ".." or ":" in p or p.split(".")[0].lower() in _RESERVED or p != p.rstrip(" ."):
+        if p == ".." or ":" in p or "\x00" in p or p.split(".")[0].lower() in _RESERVED or p != p.rstrip(" ."):
             return None
     try:
         path = os.path.realpath(os.path.join(base, *parts))

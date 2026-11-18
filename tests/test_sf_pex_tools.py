@@ -592,6 +592,18 @@ class Ba2Extract(Temp):
         self.assertIn("1 file(s) extracted, 2 skipped", out)
         self.assertEqual(run(bx.main, "diff", path, path)[0], 2)
 
+    def test_nul_byte_in_a_name_is_skipped_not_a_crash(self):
+        path = self.write("nul.ba2", writer.gnrl([("a\x00b.txt", b"x"), ("ok.txt", b"y")]))
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 file(s) extracted, 1 skipped", out)
+
+    def test_stated_size_zero_cannot_unpack_without_limit(self):
+        path = self.write("zero.ba2", writer.gnrl([("a.txt", b"z" * 100000)], size_override={0: 0}))
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        self.assertEqual(code, 2)
+        self.assertIn("more than its stated 0 bytes", out)
+
     def test_damaged_archives(self):
         good = writer.gnrl([("a.txt", b"a" * 1000)])
         cases = {
