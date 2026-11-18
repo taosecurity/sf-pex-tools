@@ -42,8 +42,9 @@ From the unpacked folder:
     python -I pex_compare.py compare tests/fixtures/pex/a1 tests/fixtures/pex/a2
 
 It prints `same: SfPexToolsTest/Alpha.pex` and `same: SfPexToolsTest/Beta.pex` and exits with code 0. The full
-test suite is `python -I tests/test_sf_pex_tools.py` (it ends with `OK`; one test is skipped, depending on
-whether lz4 is installed).
+test suite is `python -I tests/test_sf_pex_tools.py`. It ends with `OK`, with one or two tests skipped: one
+of the two lz4 tests always skips (which one depends on whether lz4 is installed), and the file-permission
+test skips on Windows.
 
 ## 5. Common tasks
 
@@ -51,13 +52,19 @@ whether lz4 is installed).
 
       python -I pex_compare.py compare "old/MyMod - Main.ba2" "new/MyMod - Main.ba2"
 
-- The same, ignoring line-number changes from moved comments or blank lines:
+- The same, ignoring line-number changes from moved comments or blank lines (with the bundled test archives,
+  Beta becomes `same` and Alpha stays `DIFFERENT`; exit code 1):
 
-      python -I pex_compare.py compare "old/MyMod - Main.ba2" "new/MyMod - Main.ba2" --ignore-debug
+      python -I pex_compare.py compare tests/fixtures/a1.ba2 tests/fixtures/b.ba2 --ignore-debug
 
 - The same, as JSON for a script to read:
 
       python -I pex_compare.py compare tests/fixtures/a1.ba2 tests/fixtures/b.ba2 --json
+
+  The JSON has `tool`, `version`, `first`, `second`, `ignore_debug`, `exit_code` (the same as the process
+  exit code), `counts` (status to number), and `scripts`: a list of `{"script", "status"}` where status is
+  `same`, `different` (with `diff`, a list of unified-diff lines), `only-in-first`, `only-in-second`,
+  `unreadable` or `duplicate` (both with `error`).
 
 - Show one script's listing (what gets compared):
 
@@ -80,8 +87,14 @@ whether lz4 is installed).
       python -I ba2_extract.py where
       python -I ba2_extract.py list "Starfield - Interface.ba2" .swf
 
-  Use `--data <folder>` for an archive somewhere else, for example a Mod Organizer 2 mod folder
-  (`<instance>/mods/<mod>/`) or the Vortex staging folder (`%APPDATA%/Vortex/starfield/mods/<mod>/`).
+  `where` prints one Data folder per line, Steam libraries first, then Game Pass (`<drive>:\XboxGames\...`),
+  or a line starting `No Starfield Data folder found` (exit code 0 either way). A bare name is read from the
+  first of those folders that holds it; `--verbose` logs which one. If none holds it, the run stops with exit
+  code 2 and an error naming the folders it looked in. Use `--data <folder>` to name the folder yourself,
+  for example a Mod Organizer 2 mod folder (`<instance>/mods/<mod>/`) or the Vortex staging folder
+  (`%APPDATA%/Vortex/starfield/mods/<mod>/`). A runnable example with the bundled test archive:
+
+      python -I ba2_extract.py list a1.ba2 --data tests/fixtures
 
 - Troubleshoot: add `--verbose` (log on stderr) or `--log sf-pex-tools.log` (append the log to a file) after the
   command name.
