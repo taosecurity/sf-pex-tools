@@ -211,7 +211,7 @@ class Archive:
         for e in self.entries:
             (self.duplicates if e["key"] in seen else seen).add(e["key"])
         if self.duplicates:
-            log(f"{self.path}: {len(self.duplicates)} name(s) stored more than once (ignoring case)")
+            log(f"{self.path}: {len(self.duplicates)} name(s) stored more than once (spelled differently: A-Z case, empty or . parts)")
         for e in self.entries:
             for off, packed, size in e["chunks"]:
                 if off + (packed or size) > self.length:
@@ -298,11 +298,11 @@ _RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {
 
 def safe_target(base, name):
     """Where a stored name goes under base, or None when it would leave base or isn't a plain file name."""
-    parts = [p for p in name.split("/") if p]
+    parts = name_parts(name)  # the same parts name_key uses: "a//b" and "./a" are a/b and a
     if not parts:
         return None
     for p in parts:
-        if p in (".", "..") or ":" in p or p.split(".")[0].lower() in _RESERVED or p != p.rstrip(" ."):
+        if p == ".." or ":" in p or p.split(".")[0].lower() in _RESERVED or p != p.rstrip(" ."):
             return None
     try:
         path = os.path.realpath(os.path.join(base, *parts))
@@ -330,13 +330,13 @@ def cmd_list(archive, needle):
 def cmd_extract(archive, out_dir, needle, force):
     base = os.path.realpath(out_dir)
     umask = _umask() if force and os.name == "posix" else 0  # read once, before any file is written
-    n = skipped = 0
+    n = skipped = damaged = 0
     with Archive(archive) as a:
         for e in a.entries:
             if needle not in e["name"].lower():
                 continue
             if e["key"] in a.duplicates:
-                say(f"skipped (the archive stores this name more than once, ignoring case): {e['name']!r}")
+                say(f"skipped (the archive stores this name more than once, spelled differently): {e['name']!r}")
                 skipped += 1
                 continue
             path = safe_target(base, e["name"])
@@ -354,7 +354,18 @@ def cmd_extract(archive, out_dir, needle, force):
                 say(f"skipped (already there; use --force to replace it): {path}")
                 skipped += 1
                 continue
-            data = a.read(e)  # before any folder is made, so a damaged entry leaves no empty folders
+            blocker = _file_in_the_way(base, path)
+            if blocker:
+                say(f"skipped (the file {blocker} is in the way of its folder): {e['name']!r}")
+                skipped += 1
+                continue
+            try:  # before any folder is made, so a damaged entry leaves no empty folders
+                data = a.read(e)
+            except BA2Error as err:  # damaged or over --max-size: skip it, keep going, exit 2 at the end
+                say(f"skipped (can't unpack it: {err})")
+                log(f"read failed for {e['name']!r}: {err!r}")
+                damaged += 1
+                continue
             try:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
             except OSError as err:  # a file already sits where one of its folders must go
@@ -379,8 +390,21 @@ def cmd_extract(archive, out_dir, needle, force):
             log(f"wrote {path} ({len(data)} bytes, {len(e['chunks'])} chunk(s))")
             say(f"extracted {e['name']} ({len(data)} bytes)")
             n += 1
-    say(f"{n} file(s) extracted" + (f", {skipped} skipped" if skipped else ""))
-    return 0
+    say(f"{n} file(s) extracted" + (f", {skipped} skipped" if skipped else "")
+        + (f", {damaged} couldn't be unpacked" if damaged else ""))
+    return 2 if damaged else 0
+
+
+def _file_in_the_way(base, path):
+    """The first existing file (not folder) between base and path's folder, or None."""
+    d = os.path.dirname(path)
+    rel = os.path.relpath(d, base)
+    cur = base
+    for part in ([] if rel == "." else rel.split(os.sep)):
+        cur = os.path.join(cur, part)
+        if os.path.lexists(cur) and not os.path.isdir(cur):
+            return cur
+    return None
 
 
 def _umask():
@@ -394,16 +418,26 @@ def _write_exclusive(path, data):
     fails partway (disk full, Ctrl+C), so a cut-off file is never left to be skipped as 'already there'."""
     out = open(path, "xb")  # FileExistsError here means nothing was created, so nothing is removed
     try:
+        out.write(data)
+    except BaseException:  # the first error (Ctrl+C, disk full) is the one raised; a close error is ignored
         try:
-            out.write(data)
-        finally:
-            out.close()  # a full disk often shows up here, when the buffer is flushed
-    except BaseException:
-        try:
-            os.remove(path)
+            out.close()
         except OSError:
             pass
+        _remove_quietly(path)
         raise
+    try:
+        out.close()  # a full disk often shows up here, when the buffer is flushed
+    except BaseException:
+        _remove_quietly(path)
+        raise
+
+
+def _remove_quietly(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def _replace_with(path, data, umask):
@@ -434,7 +468,7 @@ def _by_name(archive, needle):
         if needle not in e["name"].lower():
             continue
         if k in archive.duplicates:
-            raise BA2Error(f"{archive.path}: two stored files have the name {e['name']!r} (ignoring case); "
+            raise BA2Error(f"{archive.path}: two stored files have the name {e['name']!r} (spelled differently: A-Z case, empty or . parts); "
                            f"the game loads only one of them")
         out[k] = e
     return out

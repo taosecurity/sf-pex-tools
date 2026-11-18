@@ -296,18 +296,22 @@ def listing(data, name, ignore_debug, with_info=False):
 
 
 # ---------------------------------------------------------------- where the scripts come from
+def _script_parts(rel):
+    """A script's path as parts (ba2_extract.name_parts), without a leading 'Scripts' folder."""
+    parts = ba2_extract.name_parts(rel)
+    if len(parts) > 1 and ba2_extract.name_key(parts[0]) == "SCRIPTS":
+        parts = parts[1:]
+    return parts
+
+
 def _key(rel):
-    """Match key: ba2_extract.name_key, with any leading 'Scripts/' removed."""
-    k = ba2_extract.name_key(rel)
-    return k[len("SCRIPTS/"):] if k.startswith("SCRIPTS/") else k
+    """Match key: the script's parts with A-Z case ignored (ba2_extract.name_key)."""
+    return ba2_extract.name_key("/".join(_script_parts(rel)))
 
 
 def _shown(rel):
-    """The same path as shown in results: the same parts as the key, original spelling, no leading 'Scripts/'."""
-    parts = ba2_extract.name_parts(rel)
-    if len(parts) > 1 and ba2_extract.name_key(parts[0]) == "SCRIPTS":  # the same rule as _key
-        parts = parts[1:]
-    return "/".join(parts)
+    """The same parts as the key, in their original spelling."""
+    return "/".join(_script_parts(rel))
 
 
 class Source:

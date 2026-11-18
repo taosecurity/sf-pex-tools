@@ -179,7 +179,7 @@ Options go after the command name.
 |---|---|---|
 | 0 | every script is equivalent (`dump`: it read the script) | it worked (`diff`: the archives hold the same files) |
 | 1 | at least one script differs, or is only on one side | `diff` found new, removed or changed files |
-| 2 | a script or archive couldn't be read, a `DUPLICATE` name, or bad arguments | an archive couldn't be read (`diff`: also a name stored twice), or bad arguments |
+| 2 | a script or archive couldn't be read, a `DUPLICATE` name, or bad arguments | an archive couldn't be read (`extract`: some entries couldn't be unpacked and were skipped, the rest were extracted; `diff`: also a name stored twice), or bad arguments |
 
 ## Logging
 

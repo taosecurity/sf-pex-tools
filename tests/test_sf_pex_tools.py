@@ -387,7 +387,7 @@ class Ba2Extract(Temp):
         path = self.write("case.ba2", writer.gnrl([("A.txt", b"1"), ("a.txt", b"2")]))
         code, _, err = run(bx.main, "diff", path, path)
         self.assertEqual(code, 2)
-        self.assertIn("ignoring case", err)
+        self.assertIn("spelled differently", err)
 
     def test_diff_with_different_sizes(self):
         a = self.write("s1.ba2", writer.gnrl([("x.txt", b"short")]))
@@ -424,8 +424,32 @@ class Ba2Extract(Temp):
         path = self.write("clash.ba2", writer.gnrl([("a", b"file"), ("a/b.txt", b"inside"), ("c.txt", b"ok")]))
         code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
         self.assertEqual(code, 0, out)
-        self.assertIn("skipped (a file is in the way of its folder", out)
+        self.assertIn("is in the way of its folder", out)
         self.assertIn("2 file(s) extracted, 1 skipped", out)
+
+    def test_a_damaged_entry_is_skipped_and_the_rest_extracted(self):
+        good = writer.gnrl([("ok.txt", b"fine"), ("deep/new/x.txt", b"much longer text")])
+        data = bytearray(good)
+        start = 24 + 8 + 2 * 36 + len(__import__("zlib").compress(b"fine"))  # second entry's packed data
+        data[start:start + 4] = b"\xff\xff\xff\xff"
+        path = self.write("dmg.ba2", bytes(data))
+        out_dir = os.path.join(self.tmp, "o")
+        code, out, _ = run(bx.main, "extract", path, out_dir)
+        self.assertEqual(code, 2)
+        self.assertIn("skipped (can't unpack it", out)
+        self.assertIn("1 file(s) extracted, 1 couldn't be unpacked", out)
+        self.assertTrue(os.path.isfile(os.path.join(out_dir, "ok.txt")))
+        self.assertFalse(os.path.exists(os.path.join(out_dir, "deep")))  # no empty folders left
+
+    def test_dot_parts_are_the_same_name_for_every_command(self):
+        path = self.write("dot.ba2", writer.gnrl([("Scripts/./Foo.pex", read(fixture_pex("a1", "Alpha")))]))
+        out_dir = os.path.join(self.tmp, "o")
+        code, out, _ = run(bx.main, "extract", path, out_dir)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(os.path.isfile(os.path.join(out_dir, "Scripts", "Foo.pex")))
+        for rel in ("scripts//Foo.pex", "SCRIPTS\\Foo.pex", "./Scripts/Foo.pex", "Foo.pex"):
+            self.assertEqual(pc._key(rel), "FOO.PEX")
+            self.assertEqual(pc._shown(rel).lower(), "foo.pex")
 
     def test_a_failed_write_leaves_no_partial_file(self):
         target = os.path.join(self.tmp, "half.bin")
@@ -493,15 +517,15 @@ class Ba2Extract(Temp):
 
     def test_stated_size_smaller_than_content_is_refused(self):
         path = self.write("bomb.ba2", writer.gnrl([("a.txt", b"z" * 100000)], size_override={0: 10}))
-        code, _, err = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
         self.assertEqual(code, 2)
-        self.assertIn("more than its stated", err)
+        self.assertIn("more than its stated", out)
 
     def test_max_size(self):
         path = self.write("big.ba2", writer.gnrl([("a.txt", b"\0" * (2 * 1024 * 1024))]))
-        code, _, err = run(bx.main, "extract", path, os.path.join(self.tmp, "o"), "--max-size", "1")
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"), "--max-size", "1")
         self.assertEqual(code, 2)
-        self.assertIn("--max-size", err)
+        self.assertIn("--max-size", out)
         code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"), "--max-size", "3")
         self.assertEqual(code, 0, out)
 

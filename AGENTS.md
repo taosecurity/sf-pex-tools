@@ -93,14 +93,15 @@ whether lz4 is installed).
 - **Output:** stdout. `compare` prints one line per script (`same`, `DIFFERENT` with a diff, `ONLY IN first`,
   `ONLY IN second`, `UNREADABLE`, `DUPLICATE` when two files on one side match one name), or JSON with
   `--json`. `extract` writes the files to the output folder you name and prints one line per file
-  (`extracted ...` or `skipped (...)` with the reason: already there, unsafe name, name stored twice, or a
-  file/folder clash). Without `--force` it never replaces a file; with `--force` it swaps in a new file, so a
+  (`extracted ...` or `skipped (...)` with the reason: already there, unsafe name, name stored twice, a
+  file/folder clash, or can't unpack it). Without `--force` it never replaces a file; with `--force` it swaps in a new file, so a
   hard link is replaced, never written through. `diff` prints counts and names of new, removed and changed
   files; a file whose stated size changed is listed with `stated sizes` and is not unpacked. Errors go to
   stderr, starting `error:`, and name the file and the fix.
 - **Exit codes:** `pex_compare.py`: 0 all equivalent, 1 differences, 2 unreadable, a `DUPLICATE` name, or bad
   arguments.
-  `ba2_extract.py`: 0 OK (`diff`: identical), 1 `diff` found differences, 2 unreadable archive (`diff`: also a
+  `ba2_extract.py`: 0 OK (`diff`: identical), 1 `diff` found differences, 2 unreadable archive (`extract`:
+  some entries were damaged or over `--max-size` and were skipped, the rest were extracted; `diff`: also a
   name stored twice, or damage in a file whose size didn't change), or bad arguments. A `diff` line with
   `stated sizes` doesn't prove the file unpacks; use `extract` or `pex_compare.py compare` to check that.
 - **Log:** only when asked: `--verbose` to stderr, or `--log FILE`, which adds to the end of FILE.
