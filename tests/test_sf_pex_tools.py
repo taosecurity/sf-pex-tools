@@ -413,6 +413,27 @@ class Ba2Extract(Temp):
         self.assertEqual(read(os.path.join(out_dir, "x.txt")), b"from the archive")
         self.assertEqual([n for n in os.listdir(out_dir) if n.startswith(".ba2x-")], [])
 
+    def test_name_key(self):
+        self.assertEqual(bx.name_key("./Textures//a.DDS"), bx.name_key("textures/A.dds"))
+        self.assertNotEqual(bx.name_key("textures/straße.dds"), bx.name_key("textures/strasse.dds"))
+        self.assertEqual(pc._key("Scripts//MyMod/X.pex"), pc._key("mymod/x.PEX"))
+
+    def test_extract_skips_a_clash_between_file_and_folder(self):
+        path = self.write("clash.ba2", writer.gnrl([("a", b"file"), ("a/b.txt", b"inside"), ("c.txt", b"ok")]))
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("skipped (can't make its folder", out)
+        self.assertIn("2 file(s) extracted, 1 skipped", out)
+
+    @unittest.skipUnless(os.name == "posix", "file permissions are POSIX only")
+    def test_force_keeps_normal_permissions(self):
+        path = self.write("p.ba2", writer.gnrl([("x.txt", b"data")]))
+        out_dir = os.path.join(self.tmp, "o")
+        run(bx.main, "extract", path, out_dir)
+        run(bx.main, "extract", path, out_dir, "--force")
+        mask = os.umask(0); os.umask(mask)
+        self.assertEqual(os.stat(os.path.join(out_dir, "x.txt")).st_mode & 0o777, 0o666 & ~mask)
+
     def test_names_spelled_differently_count_as_duplicates(self):
         path = self.write("sp.ba2", writer.gnrl([("Textures/a.dds", b"1"), ("textures//A.dds", b"2"),
                                                   ("/other.txt", b"3")]))

@@ -94,7 +94,8 @@ python ba2_extract.py extract "MyMod - Main.ba2" out QuestScript
 ```
 
 Files keep their stored paths below `out`. Files that are already there are skipped unless you add `--force`,
-which replaces them (a link already in the folder is replaced itself, never written through).
+which replaces them. A hard link already in the folder is replaced, never written through, and a symbolic link
+or junction that points out of the folder is skipped.
 
 **What changed between two versions of an archive?**
 

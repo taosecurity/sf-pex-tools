@@ -203,8 +203,7 @@ class Archive:
         for e in self.entries:
             (n,) = struct.unpack("<H", self._need(2, "name table"))
             e["name"] = self._need(n, "name table").decode("utf-8", "replace").replace("\\", "/")
-            # The same file however it is spelled: no empty parts ("a//b", "/a"), case folded.
-            e["key"] = "/".join(p for p in e["name"].split("/") if p).casefold()
+            e["key"] = name_key(e["name"])
         # The game looks names up without regard to case, so two entries with the same key are ambiguous:
         # list shows them, extract skips them, diff stops.
         seen = set()
@@ -279,6 +278,20 @@ def dds_header(e):
 
 
 # ---------------------------------------------------------------- extracting safely
+def name_key(name):
+    """The same stored file however it is spelled: / separators, no empty or "." parts ("a//b", "./a",
+    "/a"), and each character upper-cased on its own, which is how Windows (NTFS) and the game ignore
+    case. (str.casefold would also join different names such as "strasse" and "straße".)"""
+    parts = [p for p in name.replace("\\", "/").split("/") if p and p != "."]
+    return "".join(_upper_one(c) for c in "/".join(parts))
+
+
+def _upper_one(c):
+    """One character upper-cased, kept as is when its upper case is longer (ß -> SS)."""
+    u = c.upper()
+    return u if len(u) == 1 else c
+
+
 _RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
 
 
@@ -330,13 +343,33 @@ def cmd_extract(archive, out_dir, needle, force):
                 log(f"refused unsafe path {e['name']!r}")
                 skipped += 1
                 continue
-            data = a.read(e)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            if os.path.lexists(path) and not force:
+            if os.path.lexists(path) and not force:  # checked before unpacking, so skipped files cost nothing
                 say(f"skipped (already there; use --force to replace it): {path}")
                 skipped += 1
                 continue
-            _write_new(path, data)
+            data = a.read(e)
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            except OSError as err:  # a file already sits where a folder must go
+                say(f"skipped (can't make its folder: {err.strerror or err}): {e['name']!r}")
+                log(f"makedirs failed for {path}: {err!r}")
+                skipped += 1
+                continue
+            try:
+                if force:
+                    _replace_with(path, data)
+                else:
+                    with open(path, "xb") as out:  # atomic: never replaces a file that appeared meanwhile
+                        out.write(data)
+            except FileExistsError:
+                say(f"skipped (already there; use --force to replace it): {path}")
+                skipped += 1
+                continue
+            except OSError as err:  # a file where a folder must go, or the reverse
+                say(f"skipped (can't write it here: {err.strerror or err}): {e['name']!r}")
+                log(f"write failed for {path}: {err!r}")
+                skipped += 1
+                continue
             log(f"wrote {path} ({len(data)} bytes, {len(e['chunks'])} chunk(s))")
             say(f"extracted {e['name']} ({len(data)} bytes)")
             n += 1
@@ -344,14 +377,23 @@ def cmd_extract(archive, out_dir, needle, force):
     return 0
 
 
-def _write_new(path, data):
-    """Write to a new temporary file next to path, then swap it into place. Replacing the folder entry
-    (instead of opening the old file for writing) means a hard link or symlink already sitting at path is
-    replaced itself, and whatever it pointed to outside the output folder is never written."""
+def _umask():
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+def _replace_with(path, data):
+    """--force: write a new temporary file next to path, then swap it into place. Replacing the folder entry
+    (instead of opening the old file for writing) means a hard link already at path is replaced itself, so
+    the file it shares data with outside the output folder is never written. (A symlink was already
+    resolved by safe_target: one pointing outside is refused, one pointing inside has its target replaced.)"""
     fd, tmp = tempfile.mkstemp(prefix=".ba2x-", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "wb") as out:
             out.write(data)
+        if os.name == "posix":  # mkstemp makes 0600; give the file the permissions a normal write would
+            os.chmod(tmp, 0o666 & ~_umask())
         os.replace(tmp, path)
     except BaseException:
         try:
