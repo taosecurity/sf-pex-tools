@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.zip binary
+*.pex binary
+*.ba2 binary

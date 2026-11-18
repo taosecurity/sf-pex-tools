@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 Richard Bejtlich
+#
+# Runs the tests on Windows and Linux, with and without the optional lz4 package. On a version tag (v0.1.0),
+# builds the release zip with its SHA-256 checksum and publishes a GitHub release with both files.
+name: tests
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.13"]
+        lz4: ["none", "4.4.5"]
+        exclude:  # GitHub's current Ubuntu runner no longer offers 3.9; Windows still tests it
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+            lz4: "none"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install lz4
+        if: matrix.lz4 != 'none'
+        run: python -m pip install lz4==${{ matrix.lz4 }}
+      - name: Unit tests
+        run: python -I tests/test_sf_pex_tools.py -v
+      - name: Example from the README
+        run: python -I pex_compare.py compare tests/fixtures/pex/a1 tests/fixtures/pex/a2
+      - name: Release zip builds
+        run: python -I build_release.py
+      - name: Keep the checksum
+        if: matrix.python == '3.13' && matrix.lz4 == 'none'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha256-${{ matrix.os }}
+          path: dist/*.sha256
+
+  same-zip:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sha256-*
+      - name: Windows and Linux built the same zip
+        run: |
+          cat sha256-*/*.sha256
+          test "$(cat sha256-ubuntu-latest/*.sha256)" = "$(cat sha256-windows-latest/*.sha256)"
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, same-zip]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Build the release zip and checksum
+        run: python -I build_release.py --tag "$GITHUB_REF_NAME"
+      - name: Check the checksum
+        working-directory: dist
+        run: sha256sum -c ./*.sha256
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.sha256
+          --title "sf-pex-tools ${GITHUB_REF_NAME#v}"
+          --notes-file build/release-notes.md
+          --verify-tag
