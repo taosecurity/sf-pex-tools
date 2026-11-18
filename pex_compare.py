@@ -324,6 +324,7 @@ class Source:
         if os.path.isfile(path) and path.lower().endswith(".ba2"):
             self.archive = ba2_extract.Archive(path)
             try:
+                self.archive.check_can_unpack()  # a missing lz4 stops the run before any script is compared
                 for e in self.archive.entries:
                     if e["name"].lower().endswith(".pex"):
                         self._add(_key(e["name"]), f"{path}:{e['name']}", lambda e=e: self.archive.read(e),

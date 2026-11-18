@@ -221,6 +221,19 @@ class Archive:
                 if off + (packed or size) > self.length:
                     raise BA2Error(f"{self.path}: {e['name']} points past the end of the archive (damaged)")
 
+    def needs_lz4(self):
+        return self.method == 3 and any(c[1] for e in self.entries for c in e["chunks"])
+
+    def check_can_unpack(self):
+        """Called by commands that unpack (extract, diff, compare) before they write or report anything, so a
+        missing lz4 package stops the run once, up front. `list` doesn't unpack and doesn't call it."""
+        if self.needs_lz4():
+            try:
+                import lz4.block  # noqa: F401
+            except ImportError:
+                raise BA2Error(f"{self.path} uses LZ4 compression. Install it with:  "
+                               f"python -m pip install lz4==4.4.5")
+
     def _unpack(self, raw, packed, size, name):
         if not packed:
             return raw
@@ -337,6 +350,7 @@ def cmd_extract(archive, out_dir, needle, force):
     n = skipped = damaged = 0
     checked = set()  # folders known to be folders (for _file_in_the_way)
     with Archive(archive) as a:
+        a.check_can_unpack()  # a missing lz4 stops here, before any file is written
         for e in a.entries:
             if needle not in e["name"].lower():
                 continue
@@ -367,7 +381,7 @@ def cmd_extract(archive, out_dir, needle, force):
             try:  # before any folder is made, so a damaged entry leaves no empty folders
                 data = a.read(e)
             except EntryError as err:  # this entry is damaged or too big: skip it, keep going, exit 2 at the end
-                say(f"skipped (can't unpack it: {err}): {e['name']!r}")
+                say(f"skipped (can't unpack it): {err}")  # the message names the archive and the entry
                 log(f"read failed for {e['name']!r}: {err!r}")
                 damaged += 1
                 continue
@@ -410,10 +424,10 @@ def _file_in_the_way(base, path, checked):
         cur = os.path.join(cur, part)
         if cur in checked:
             continue
-        if os.path.lexists(cur) and not os.path.isdir(cur):
-            return cur
         if os.path.isdir(cur):
             checked.add(cur)
+        elif os.path.lexists(cur):
+            return cur
     return None
 
 
@@ -486,6 +500,8 @@ def _by_name(archive, needle):
 
 def cmd_diff(a_path, b_path, needle):
     with Archive(a_path) as fa, Archive(b_path) as fb:
+        fa.check_can_unpack()
+        fb.check_can_unpack()
         if fa.kind != fb.kind:
             say(f"note: archive types differ ({fa.kind} vs {fb.kind}); texture and general files never match")
         a, b = _by_name(fa, needle), _by_name(fb, needle)
@@ -556,8 +572,8 @@ def main(argv=None):
                         help=f"largest single file to unpack, in MB (default {DEFAULT_MAX_MB})")
     p = _Parser(prog="ba2_extract.py", description="List, extract and compare files in BA2 archives. "
                 "Options go after the command name.",
-                epilog="Exit codes: 0 OK (diff: identical), 1 diff found differences, 2 error (extract: also when "
-                       "damaged entries were skipped; the others were still extracted).")
+                epilog="Exit codes: 0 OK (diff: identical), 1 diff found differences, 2 error (extract: also when entries that are "
+                       "damaged or over --max-size were skipped; the others were still extracted).")
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     sub = p.add_subparsers(dest="cmd", metavar="command", parser_class=_Parser)
     s = sub.add_parser("list", parents=[common], help="list stored paths that contain the text")

@@ -441,23 +441,43 @@ class Ba2Extract(Temp):
         self.assertTrue(os.path.isfile(os.path.join(out_dir, "ok.txt")))
         self.assertFalse(os.path.exists(os.path.join(out_dir, "deep")))  # no empty folders left
 
-    def test_missing_lz4_stops_extract_once_with_the_fix(self):
-        data = bytearray(writer.gnrl([("a.txt", b"x" * 50), ("b.txt", b"y" * 50)], version=3))
+    def _lz4_archive(self, files):
+        data = bytearray(writer.gnrl(files, version=3))
         data[32:36] = (3).to_bytes(4, "little")  # say LZ4: the reader must ask for the lz4 package
-        path = self.write("needlz4.ba2", bytes(data))
+        return self.write("needlz4.ba2", bytes(data))
+
+    def _without_lz4(self, fn):
         saved = {k: sys.modules.get(k) for k in ("lz4", "lz4.block")}
         sys.modules["lz4"] = sys.modules["lz4.block"] = None  # import fails as if not installed
         try:
-            code, out, err = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+            return fn()
         finally:
             for k, v in saved.items():
                 if v is None:
                     sys.modules.pop(k, None)
                 else:
                     sys.modules[k] = v
+
+    def test_missing_lz4_stops_extract_once_before_writing(self):
+        path = self._lz4_archive([("a.txt", b"x" * 50), ("b.txt", b"y" * 50)])
+        out_dir = os.path.join(self.tmp, "o")
+        code, out, err = self._without_lz4(lambda: run(bx.main, "extract", path, out_dir))
         self.assertEqual(code, 2)
         self.assertEqual(err.count("lz4==4.4.5"), 1)
         self.assertNotIn("skipped", out)
+        self.assertFalse(os.path.exists(out_dir))  # nothing written
+        code, out, _ = self._without_lz4(lambda: run(bx.main, "list", path))  # listing needs no unpacking
+        self.assertEqual(code, 0)
+        self.assertIn("a.txt", out)
+
+    def test_missing_lz4_stops_compare_once(self):
+        files = [(f"Scripts/SfPexToolsTest/{s}.pex", read(fixture_pex("a1", s))) for s in ("Alpha", "Beta")]
+        path = self._lz4_archive(files)
+        code, out, err = self._without_lz4(
+            lambda: run(pc.main, "compare", path, os.path.join(PEX, "a1"), "--json"))
+        self.assertEqual(code, 2)
+        self.assertEqual(err.count("lz4==4.4.5"), 1)
+        self.assertEqual(out, "")
 
     def test_dot_parts_are_the_same_name_for_every_command(self):
         path = self.write("dot.ba2", writer.gnrl([("Scripts/./Foo.pex", read(fixture_pex("a1", "Alpha")))]))
