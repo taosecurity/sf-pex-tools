@@ -42,7 +42,15 @@ def clean(text):
 
 
 def say(text, file=None):
-    print(clean(text), file=file or sys.stdout)
+    """Print cleaned text. Characters the console's encoding can't show (a redirected cp1252 stdout on
+    Windows) come out as \\uNNNN instead of stopping the run."""
+    out = file or sys.stdout
+    text = clean(text)
+    try:
+        print(text, file=out)
+    except UnicodeEncodeError:
+        enc = getattr(out, "encoding", None) or "ascii"
+        print(text.encode(enc, "backslashreplace").decode(enc), file=out)
 
 
 def log(msg):
@@ -272,7 +280,11 @@ def safe_target(base, name):
         if p in (".", "..") or ":" in p or p.split(".")[0].lower() in _RESERVED or p != p.rstrip(" ."):
             return None
     path = os.path.realpath(os.path.join(base, *parts))
-    return path if path.startswith(base + os.sep) else None
+    try:  # commonpath also handles a base that is a drive or filesystem root (D:\ or /)
+        inside = path != base and os.path.commonpath([base, path]) == base
+    except ValueError:  # different drives
+        inside = False
+    return path if inside else None
 
 
 # ---------------------------------------------------------------- commands
@@ -314,22 +326,39 @@ def cmd_extract(archive, out_dir, needle, force):
     return 0
 
 
+def _by_name(archive, needle):
+    """Matching entries by lower-case name. The game treats names without regard to case, so two entries
+    whose names differ only in case would hide one another: that stops the run."""
+    out = {}
+    for e in archive.entries:
+        k = e["name"].lower()
+        if needle not in k:
+            continue
+        if k in out:
+            raise BA2Error(f"{archive.path}: two stored files have the name {e['name']!r} (ignoring case); "
+                           f"the game loads only one of them")
+        out[k] = e
+    return out
+
+
 def cmd_diff(a_path, b_path, needle):
     with Archive(a_path) as fa, Archive(b_path) as fb:
         if fa.kind != fb.kind:
             say(f"note: archive types differ ({fa.kind} vs {fb.kind}); texture and general files never match")
-        a = {e["name"].lower(): e for e in fa.entries if needle in e["name"].lower()}
-        b = {e["name"].lower(): e for e in fb.entries if needle in e["name"].lower()}
+        a, b = _by_name(fa, needle), _by_name(fb, needle)
         new = sorted(b[k]["name"] for k in b.keys() - a.keys())
         removed = sorted(a[k]["name"] for k in a.keys() - b.keys())
         changed, same = [], 0
         for k in sorted(a.keys() & b.keys()):
-            da, db = fa.read(a[k]), fb.read(b[k])
-            if da == db:
+            if a[k]["size"] != b[k]["size"]:  # different sizes: changed, no need to unpack
+                is_same = False
+            else:
+                is_same = fa.read(a[k]) == fb.read(b[k])
+            if is_same:
                 same += 1
             else:
-                changed.append(f"{b[k]['name']}  ({len(da)} -> {len(db)} bytes)")
-            log(f"compared {k}: {'same' if da == db else 'changed'}")
+                changed.append(f"{b[k]['name']}  ({a[k]['size']} -> {b[k]['size']} bytes)")
+            log(f"compared {k}: {'same' if is_same else 'changed'}")
     for label, items in (("new in B", new), ("removed (only in A)", removed), ("changed", changed)):
         say(f"{label}: {len(items)}")
         for x in items:

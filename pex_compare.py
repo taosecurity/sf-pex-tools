@@ -46,12 +46,11 @@ ba2_extract = _load_ba2()
 clean, say = ba2_extract.clean, ba2_extract.say
 
 VERSION = "0.1.0"
-LOG = None  # a file object when --verbose or --log is on
 
 
 def log(msg):
-    if LOG:
-        print(clean(msg), file=LOG, flush=True)
+    """One log for both tools: ba2_extract holds the log file, so archive details reach it too."""
+    ba2_extract.log(msg)
 
 
 # opcode: (name, fixed argument count, variadic). Variadic ops are followed by an int count and that many args.
@@ -152,14 +151,18 @@ def read_function(r, indent):
             count = r.value()
             if not count.startswith("int:"):
                 raise PexError(f"{r.name}: variadic count is {count} at byte {r.p}")
-            args += [r.value() for _ in range(int(count[4:]))]
+            n = int(count[4:])
+            if n < 0:
+                raise PexError(f"{r.name}: variadic count {n} is negative at byte {r.p} (damaged)")
+            args += [r.value() for _ in range(n)]
         code.append((name, args))
     rename = {}
     for _, args in code:
         for a in args:
-            if a.startswith("ident:::temp") and a[7:] not in rename:
-                rename[a[7:]] = f"::t{len(rename) + 1}"
-    for lname, _ in sorted(local_list, key=lambda x: (x[1], x[0])):
+            temp = a[len("ident:"):]
+            if a.startswith("ident:::temp") and temp not in rename:
+                rename[temp] = f"::t{len(rename) + 1}"
+    for lname, _ in sorted(local_list, key=lambda x: (x[1], x[0])):  # temps the code never uses
         if lname.startswith("::temp") and lname not in rename:
             rename[lname] = f"::t{len(rename) + 1}"
     r.temps += len(rename)
@@ -172,18 +175,14 @@ def read_function(r, indent):
 
 
 def read_pex_bytes(data, name):
-    """(listing lines, debug lines) for one script's bytes. On PexError, e.partial holds what was read."""
+    """(listing lines, debug lines, header info not compared) for one script's bytes.
+    On PexError, e.partial holds what was read."""
     out = []
     try:
         return _read_into(data, name, out)
     except PexError as e:
         e.partial = out
         raise
-
-
-def read_pex(path):
-    with open(path, "rb") as f:
-        return read_pex_bytes(f.read(), path)
 
 
 def _read_into(data, name, out):
@@ -202,7 +201,10 @@ def _read_into(data, name, out):
     starfield = (major, minor) >= (3, 12)
     r.u64()  # compile time: never compared
     out.append(f"pex {major}.{minor} game {game}")
-    out.append(f"source {r.wstr()}  user {r.wstr()}  machine {r.wstr()}")
+    # Where and by whom it was built isn't part of the code: only the source file's name is compared.
+    source, user, machine = r.wstr(), r.wstr(), r.wstr()
+    out.append(f"source {source.replace(chr(92), '/').rsplit('/', 1)[-1]}")
+    info = [f"# not compared: source path {source!r}, user {user!r}, machine {machine!r}"]
     r.strings = [r.wstr() for _ in range(r.u16())]
 
     debug = []
@@ -283,12 +285,12 @@ def _read_into(data, name, out):
         raise PexError(f"{name}: {len(data) - r.p} unread bytes at the end (a format this tool doesn't understand)")
     log(f"read {name}: pex {major}.{minor} game {game}, {len(r.strings)} strings, {n_objects} object(s), "
         f"{n_functions} function(s), {len(debug)} debug entries, {r.temps} temporary variable(s) renamed")
-    return out, debug
+    return out, debug, info
 
 
-def listing(data, name, ignore_debug):
-    out, debug = read_pex_bytes(data, name)
-    return out if ignore_debug else out + debug
+def listing(data, name, ignore_debug, with_info=False):
+    out, debug, info = read_pex_bytes(data, name)
+    return (info if with_info else []) + out + ([] if ignore_debug else debug)
 
 
 # ---------------------------------------------------------------- where the scripts come from
@@ -311,24 +313,37 @@ class Source:
         self.scripts = {}
         if os.path.isfile(path) and path.lower().endswith(".ba2"):
             self.archive = ba2_extract.Archive(path)
-            for e in self.archive.entries:
-                if e["name"].lower().endswith(".pex"):
-                    self.scripts[_key(e["name"])] = (f"{path}:{e['name']}", lambda e=e: self.archive.read(e),
-                                                     _shown(e["name"]))
+            try:
+                for e in self.archive.entries:
+                    if e["name"].lower().endswith(".pex"):
+                        self._add(_key(e["name"]), f"{path}:{e['name']}", lambda e=e: self.archive.read(e),
+                                  _shown(e["name"]))
+            except ValueError:
+                self.archive.close()
+                raise
             log(f"{path}: archive with {len(self.scripts)} script(s) out of {len(self.archive.entries)} files")
         elif os.path.isfile(path):
             self.single = True
-            self.scripts[_key(os.path.basename(path))] = (path, lambda: _read_file(path), os.path.basename(path))
+            self._add(_key(os.path.basename(path)), path, lambda: _read_file(path), os.path.basename(path))
         elif os.path.isdir(path):
-            for root, _, names in os.walk(path):
-                for n in names:
+            for root, dirs, names in os.walk(path):
+                dirs.sort()
+                for n in sorted(names):
                     if n.lower().endswith(".pex"):
                         full = os.path.join(root, n)
                         rel = os.path.relpath(full, path)
-                        self.scripts[_key(rel)] = (full, lambda full=full: _read_file(full), _shown(rel))
+                        self._add(_key(rel), full, lambda full=full: _read_file(full), _shown(rel))
             log(f"{path}: folder with {len(self.scripts)} script(s)")
         else:
             raise OSError(f"{path}: no such file or folder")
+
+    def _add(self, key, label, loader, shown):
+        """Two scripts that match the same name (Scripts/X.pex and X.pex, or names differing only in case)
+        would hide one another, so that stops the run."""
+        if key in self.scripts:
+            raise ValueError(f"{self.path}: {self.scripts[key][0]} and {label} both match the script name "
+                             f"{shown!r}; compare a folder that holds only one of them")
+        self.scripts[key] = (label, loader, shown)
 
     def close(self):
         if self.archive:
@@ -399,15 +414,10 @@ def compare(a_path, b_path, ignore_debug, as_json):
     return status
 
 
-class _Parser(argparse.ArgumentParser):
-    def error(self, message):
-        self.print_usage(sys.stderr)
-        say(f"error: {message}", file=sys.stderr)
-        sys.exit(2)
+_Parser = ba2_extract._Parser
 
 
 def main(argv=None):
-    global LOG
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--ignore-debug", action="store_true",
                         help="leave out line-number debug info (it changes when only comments or blank lines move)")
@@ -428,14 +438,11 @@ def main(argv=None):
         p.print_help()
         return 2
     try:
-        if args.log:
-            LOG = open(args.log, "a", encoding="utf-8")
-        elif args.verbose:
-            LOG = sys.stderr
+        ba2_extract.open_log(args)
         log(f"pex_compare {VERSION}: {args.cmd}")
         if args.cmd == "dump":
             try:
-                say("\n".join(listing(_read_file(args.file), args.file, args.ignore_debug)))
+                say("\n".join(listing(_read_file(args.file), args.file, args.ignore_debug, with_info=True)))
                 return 0
             except PexError as e:
                 say("\n".join(getattr(e, "partial", [])[-40:]))
@@ -448,9 +455,7 @@ def main(argv=None):
         log(f"failed: {e!r}")
         return 2
     finally:
-        if LOG and LOG is not sys.stderr:
-            LOG.close()
-        LOG = None
+        ba2_extract.close_log()
 
 
 if __name__ == "__main__":

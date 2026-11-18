@@ -89,7 +89,52 @@ class PexCompare(Temp):
         code, out, _ = run(pc.main, "compare", os.path.join(PEX, "a1"), os.path.join(PEX, "b"))
         self.assertEqual(code, 1)
         self.assertIn("DIFFERENT: SfPexToolsTest/Alpha.pex", out)
-        self.assertIn("+         0 array_getallmatchingstructs ident:Missions, ident:::t2, str:'Reward', int:250", out)
+        self.assertIn("+         0 array_getallmatchingstructs ident:Missions, ident:::t1, str:'Reward', int:250", out)
+
+    def test_temporaries_renumbered_by_the_compiler_still_match(self):
+        """Swap two ::tempN names in the string table, as another build may number them, for every pair:
+        the listing must not change. (Before the 0.1.0 review fix, 71 of Alpha's 100 swaps gave DIFFERENT.)"""
+        for script in ("Alpha", "Beta"):
+            data = read(fixture_pex("a1", script))
+            base = pc.listing(data, "a", False)
+            swaps = 0
+            for i in range(21):
+                for j in range(i + 1, 21):
+                    a, b = b"::temp%d" % i, b"::temp%d" % j
+                    pa, pb = bytes([len(a), 0]) + a, bytes([len(b), 0]) + b  # length-prefixed table entries
+                    if len(a) != len(b) or pa not in data or pb not in data:
+                        continue
+                    swapped = data.replace(pa, b"\0\0@@").replace(pb, pa).replace(b"\0\0@@", pb)
+                    with self.subTest(script=script, swap=(i, j)):
+                        self.assertEqual(pc.listing(swapped, "b", False), base)
+                    swaps += 1
+            self.assertGreater(swaps, 40)
+
+    def test_build_place_user_and_machine_are_not_compared(self):
+        data = read(fixture_pex("a1", "Alpha"))
+        other = data.replace(b"\x0c\x00<SUPPRESSED>", b"\x0c\x00amy-on-pc-02", 1)
+        self.assertNotEqual(data, other)
+        self.assertEqual(pc.listing(data, "a", False), pc.listing(other, "b", False))
+        path = self.write("other.pex", other)
+        code, out, _ = run(pc.main, "dump", path)
+        self.assertIn("# not compared: source path 'Alpha.psc', user 'amy-on-pc-02'", out)
+
+    def test_two_files_matching_one_name_stop_the_run(self):
+        d = os.path.join(self.tmp, "dup")
+        os.makedirs(os.path.join(d, "Scripts"))
+        shutil.copy(fixture_pex("a1", "Alpha"), os.path.join(d, "Alpha.pex"))
+        shutil.copy(fixture_pex("a2", "Alpha"), os.path.join(d, "Scripts", "Alpha.pex"))
+        code, _, err = run(pc.main, "compare", d, os.path.join(PEX, "a1"))
+        self.assertEqual(code, 2)
+        self.assertIn("both match the script name", err)
+
+    def test_archive_details_reach_the_compare_log(self):
+        logf = os.path.join(self.tmp, "c.log")
+        run(pc.main, "compare", os.path.join(FIX, "a1.ba2"), os.path.join(PEX, "a2"), "--log", logf)
+        with open(logf, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("type GNRL, 2 files, compression zlib", text)
+        self.assertIsNone(bx.LOG)
 
     def test_comment_only_change_needs_ignore_debug(self):
         code, out, _ = run(pc.main, "compare", fixture_pex("a1", "Beta"), fixture_pex("b", "Beta"))
@@ -283,6 +328,30 @@ class Ba2Extract(Temp):
         self.assertEqual(code, 0)
         self.assertNotIn("\x1b", out)
         self.assertIn("evil\\x1b[31mred.txt", out)
+
+    def test_output_folder_at_a_filesystem_root(self):
+        root = os.path.abspath(os.sep)
+        self.assertEqual(bx.safe_target(root, "a/b.txt"), os.path.join(root, "a", "b.txt"))
+        self.assertIsNone(bx.safe_target(root, "../b.txt") if os.path.dirname(root) != root else None)
+
+    def test_names_the_console_cannot_show(self):
+        out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", newline="\n")
+        bx.say("scripts/名前.pex", file=out)
+        out.flush()
+        self.assertEqual(out.buffer.getvalue(), b"scripts/\\u540d\\u524d.pex\n")
+
+    def test_diff_refuses_names_differing_only_in_case(self):
+        path = self.write("case.ba2", writer.gnrl([("A.txt", b"1"), ("a.txt", b"2")]))
+        code, _, err = run(bx.main, "diff", path, path)
+        self.assertEqual(code, 2)
+        self.assertIn("ignoring case", err)
+
+    def test_diff_with_different_sizes(self):
+        a = self.write("s1.ba2", writer.gnrl([("x.txt", b"short")]))
+        b = self.write("s2.ba2", writer.gnrl([("x.txt", b"much longer text")]))
+        code, out, _ = run(bx.main, "diff", a, b)
+        self.assertEqual(code, 1)
+        self.assertIn("x.txt  (5 -> 16 bytes)", out)
 
     def test_damaged_archives(self):
         good = writer.gnrl([("a.txt", b"a" * 1000)])
