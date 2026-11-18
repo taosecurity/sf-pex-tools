@@ -321,15 +321,15 @@ class Source:
         self.path, self.archive, self.single = path, None, False
         self.scripts = {}
         self.duplicates = {}  # key -> labels of every file matching that script name
+        self.entry = {}  # archive only: key -> archive entry, for the up-front lz4 check
         if os.path.isfile(path) and path.lower().endswith(".ba2"):
             self.archive = ba2_extract.Archive(path)
             try:
-                # A missing lz4 stops the run before any script is compared, if any script needs it.
-                self.archive.check_can_unpack([e for e in self.archive.entries if e["name"].lower().endswith(".pex")])
                 for e in self.archive.entries:
                     if e["name"].lower().endswith(".pex"):
                         self._add(_key(e["name"]), f"{path}:{e['name']}", lambda e=e: self.archive.read(e),
                                   _shown(e["name"]))
+                        self.entry.setdefault(_key(e["name"]), e)
             except BaseException:
                 self.archive.close()
                 raise
@@ -384,6 +384,12 @@ def compare(a_path, b_path, ignore_debug, as_json):
             fa, fb = a.scripts, b.scripts
         if not fa and not fb:
             raise ValueError(f"no .pex files found in {a_path} or {b_path}")
+        # A missing lz4 stops the run before anything is compared, but only if a script that will really be
+        # read (on both sides, not a DUPLICATE) needs it.
+        to_read = [k for k in set(fa) & set(fb) if k not in a.duplicates and k not in b.duplicates]
+        for src in (a, b):
+            if src.archive:
+                src.archive.check_can_unpack([src.entry[k] for k in to_read if k in src.entry])
         results, status = [], 0
         for key in sorted(set(fa) | set(fb)):
             shown = (fa.get(key) or fb.get(key))[2]
@@ -461,10 +467,12 @@ def main(argv=None):
         log(f"pex_compare {VERSION}: {args.cmd}")
         if args.cmd == "dump":
             try:
-                say("\n".join(listing(_read_file(args.file), args.file, args.ignore_debug, with_info=True)))
+                for line in listing(_read_file(args.file), args.file, args.ignore_debug, with_info=True):
+                    say(line)
                 return 0
             except PexError as e:
-                say("\n".join(getattr(e, "partial", [])[-40:]))
+                for line in getattr(e, "partial", [])[-40:]:
+                    say(line)
                 say(f"UNREADABLE: {e}")
                 log(f"failed: {e!r}")
                 return 2

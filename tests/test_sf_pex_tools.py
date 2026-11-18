@@ -481,20 +481,47 @@ class Ba2Extract(Temp):
 
     def test_diff_without_lz4_when_nothing_needs_unpacking(self):
         a = self._lz4_archive([("x.txt", b"short")])
-        b = self.write("b3.ba2", read(a))
-        a2 = self.write("a3.ba2", bytes(bytearray(writer.gnrl([("x.txt", b"a longer text")], version=3))))
-        code, out, err = self._without_lz4(lambda: run(bx.main, "diff", a2, b))
+        a = self.write("a3.ba2", read(a))
+        b = self._lz4_archive([("x.txt", b"a longer text")])
+        code, out, err = self._without_lz4(lambda: run(bx.main, "diff", a, b))
         self.assertEqual(code, 1, out + err)  # sizes differ: decided without unpacking, so lz4 isn't needed
         self.assertIn("stated sizes", out)
 
     def test_newline_in_a_damaged_entry_name_stays_on_one_line(self):
-        data = bytearray(writer.gnrl([("a\nextracted fake.txt (1 bytes)", b"much longer text")]))
-        start = 24 + 8 + 36
+        data = bytearray(writer.gnrl([("a\nextracted fake.txt (1 bytes)", b"much longer text")], version=2))
+        start = 24 + 8 + 36  # version 2 header + one record: the packed data starts here
         data[start:start + 4] = b"\xff\xff\xff\xff"
         path = self.write("nl.ba2", bytes(data))
         code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
         self.assertEqual(code, 2)
+        self.assertIn("skipped (can't unpack it): ", out)
+        self.assertIn("a\\x0aextracted fake.txt", out)
         self.assertFalse(any(line.startswith("extracted fake") for line in out.splitlines()))
+
+    def test_newline_in_any_printed_name_stays_on_one_line(self):
+        name = "a\nFORGED LINE"
+        path = self.write("nl2.ba2", writer.gnrl([(name, b"fine")]))
+        for args in (("list", path), ("diff", path, self.write("e.ba2", writer.gnrl([("other", b"x")])))):
+            with self.subTest(args[0]):
+                _, out, _ = run(bx.main, *args)
+                self.assertIn("a\\x0aFORGED LINE", out)
+                self.assertNotIn("\nFORGED LINE", out)
+
+    def test_compare_without_lz4_when_no_script_is_read(self):
+        files = [("Scripts/Other/Gamma.pex", read(fixture_pex("a1", "Alpha")))]
+        path = self._lz4_archive(files)
+        code, out, err = self._without_lz4(lambda: run(pc.main, "compare", path, os.path.join(PEX, "a1")))
+        self.assertEqual(code, 1, out + err)  # nothing in common: only-in lines, nothing unpacked
+        self.assertIn("ONLY IN first: Other/Gamma.pex", out)
+
+    def test_extract_without_lz4_when_everything_is_already_there(self):
+        path = self._lz4_archive([("a.txt", b"x" * 50)])
+        out_dir = os.path.join(self.tmp, "o")
+        os.makedirs(out_dir)
+        self.write(os.path.join("o", "a.txt"), b"old")
+        code, out, err = self._without_lz4(lambda: run(bx.main, "extract", path, out_dir))
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("already there", out)
 
     def test_missing_lz4_stops_compare_once(self):
         files = [(f"Scripts/SfPexToolsTest/{s}.pex", read(fixture_pex("a1", s))) for s in ("Alpha", "Beta")]

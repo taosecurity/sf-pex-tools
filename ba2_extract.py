@@ -38,8 +38,10 @@ _MAX_SIZE = DEFAULT_MAX_MB * 1024 * 1024
 
 
 def clean(text):
-    """Text from archives and scripts can hold control characters (terminal escape codes): show them as \\xNN."""
-    return "".join(c if c == "\n" or c.isprintable() else f"\\x{ord(c):02x}" for c in str(text))
+    """Text from archives and scripts can hold control characters (terminal escape codes, or a newline that would
+    forge another output line): show every one as \\xNN. One call is one output line; print several lines with
+    one call each."""
+    return "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in str(text))
 
 
 def say(text, file=None):
@@ -348,7 +350,10 @@ def cmd_extract(archive, out_dir, needle, force):
     n = skipped = damaged = 0
     checked = set()  # folders known to be folders (for _file_in_the_way)
     with Archive(archive) as a:
-        a.check_can_unpack([e for e in a.entries if needle in e["name"].lower()])  # before any file is written
+        # A missing lz4 stops the run before any file is written, but only if an entry that will really be
+        # unpacked needs it (not one that will be skipped for its name or because it's already there).
+        a.check_can_unpack([e for e in a.entries if needle in e["name"].lower()
+                            and _would_unpack(a, e, base, force)])
         for e in a.entries:
             if needle not in e["name"].lower():
                 continue
@@ -379,8 +384,7 @@ def cmd_extract(archive, out_dir, needle, force):
             try:  # before any folder is made, so a damaged entry leaves no empty folders
                 data = a.read(e)
             except EntryError as err:  # this entry is damaged or too big: skip it, keep going, exit 2 at the end
-                # The message names the archive and the entry; a newline in a stored name stays on this line.
-                say("skipped (can't unpack it): " + str(err).replace("\n", "\\n"))
+                say(f"skipped (can't unpack it): {err}")  # the message names the archive and the entry
                 log(f"read failed for {e['name']!r}: {err!r}")
                 damaged += 1
                 continue
@@ -411,6 +415,16 @@ def cmd_extract(archive, out_dir, needle, force):
     say(f"{n} file(s) extracted" + (f", {skipped} skipped" if skipped else "")
         + (f", {damaged} couldn't be unpacked" if damaged else ""))
     return 2 if damaged else 0
+
+
+def _would_unpack(a, e, base, force):
+    """The cheap skip checks cmd_extract makes before unpacking an entry, without printing anything."""
+    if e["key"] in a.duplicates:
+        return False
+    path = safe_target(base, e["name"])
+    if path is None or os.path.isdir(path):
+        return False
+    return force or not os.path.lexists(path)
 
 
 def _file_in_the_way(base, path, checked):
