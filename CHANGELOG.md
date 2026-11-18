@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (not yet released)
+## 0.1.0 (2026-11-18)
 
 First public release. It's based on two scripts that had been used privately since 2026-11-02 to check rebuilt
 mods.
