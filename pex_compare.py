@@ -297,16 +297,17 @@ def listing(data, name, ignore_debug, with_info=False):
 
 # ---------------------------------------------------------------- where the scripts come from
 def _key(rel):
-    """Match key: the same rule ba2_extract uses for one stored file (no empty or "." parts, case ignored as
-    Windows does), with any leading 'Scripts/' removed."""
+    """Match key: ba2_extract.name_key, with any leading 'Scripts/' removed."""
     k = ba2_extract.name_key(rel)
     return k[len("SCRIPTS/"):] if k.startswith("SCRIPTS/") else k
 
 
 def _shown(rel):
-    """The same path as shown in results: original spelling, / separators, no leading 'scripts/'."""
-    k = rel.replace("\\", "/").lstrip("/")
-    return k[8:] if k.lower().startswith("scripts/") else k
+    """The same path as shown in results: the same parts as the key, original spelling, no leading 'Scripts/'."""
+    parts = ba2_extract.name_parts(rel)
+    if parts and parts[0].lower() == "scripts":
+        parts = parts[1:]
+    return "/".join(parts)
 
 
 class Source:

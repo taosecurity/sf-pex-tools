@@ -278,18 +278,19 @@ def dds_header(e):
 
 
 # ---------------------------------------------------------------- extracting safely
+_ASCII_UPPER = str.maketrans("abcdefghijklmnopqrstuvwxyz", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+def name_parts(name):
+    """A stored or relative path as its parts: / or \\ separators, no empty or "." parts ("a//b", "./a", "/a")."""
+    return [p for p in name.replace("\\", "/").split("/") if p and p != "."]
+
+
 def name_key(name):
-    """The same stored file however it is spelled: / separators, no empty or "." parts ("a//b", "./a",
-    "/a"), and each character upper-cased on its own, which is how Windows (NTFS) and the game ignore
-    case. (str.casefold would also join different names such as "strasse" and "straße".)"""
-    parts = [p for p in name.replace("\\", "/").split("/") if p and p != "."]
-    return "".join(_upper_one(c) for c in "/".join(parts))
-
-
-def _upper_one(c):
-    """One character upper-cased, kept as is when its upper case is longer (ß -> SS)."""
-    u = c.upper()
-    return u if len(u) == 1 else c
+    """The same stored file however it is spelled: its parts, with A-Z case ignored. Only ASCII letters are
+    folded, as the game's own name lookup does; folding all of Unicode (str.upper or casefold) would join
+    names that are different files, such as "strasse" and "straße"."""
+    return "/".join(name_parts(name)).translate(_ASCII_UPPER)
 
 
 _RESERVED = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
@@ -328,6 +329,7 @@ def cmd_list(archive, needle):
 
 def cmd_extract(archive, out_dir, needle, force):
     base = os.path.realpath(out_dir)
+    umask = _umask() if force and os.name == "posix" else 0  # read once, before any file is written
     n = skipped = 0
     with Archive(archive) as a:
         for e in a.entries:
@@ -343,29 +345,33 @@ def cmd_extract(archive, out_dir, needle, force):
                 log(f"refused unsafe path {e['name']!r}")
                 skipped += 1
                 continue
-            if os.path.lexists(path) and not force:  # checked before unpacking, so skipped files cost nothing
+            # Every reason to skip is checked before unpacking, so skipped files cost nothing.
+            if os.path.isdir(path):
+                say(f"skipped (a folder with this name is already there): {e['name']!r}")
+                skipped += 1
+                continue
+            if os.path.lexists(path) and not force:
                 say(f"skipped (already there; use --force to replace it): {path}")
+                skipped += 1
+                continue
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+            except OSError as err:  # a file already sits where one of its folders must go
+                say(f"skipped (a file is in the way of its folder: {err.strerror or err}): {e['name']!r}")
+                log(f"makedirs failed for {path}: {err!r}")
                 skipped += 1
                 continue
             data = a.read(e)
             try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-            except OSError as err:  # a file already sits where a folder must go
-                say(f"skipped (can't make its folder: {err.strerror or err}): {e['name']!r}")
-                log(f"makedirs failed for {path}: {err!r}")
-                skipped += 1
-                continue
-            try:
                 if force:
-                    _replace_with(path, data)
+                    _replace_with(path, data, umask)
                 else:
-                    with open(path, "xb") as out:  # atomic: never replaces a file that appeared meanwhile
-                        out.write(data)
+                    _write_exclusive(path, data)
             except FileExistsError:
                 say(f"skipped (already there; use --force to replace it): {path}")
                 skipped += 1
                 continue
-            except OSError as err:  # a file where a folder must go, or the reverse
+            except OSError as err:
                 say(f"skipped (can't write it here: {err.strerror or err}): {e['name']!r}")
                 log(f"write failed for {path}: {err!r}")
                 skipped += 1
@@ -383,7 +389,22 @@ def _umask():
     return mask
 
 
-def _replace_with(path, data):
+def _write_exclusive(path, data):
+    """Without --force: create the file only if nothing is there (atomic), and remove it again if the write
+    fails partway (disk full, Ctrl+C), so a cut-off file is never left to be skipped as 'already there'."""
+    with open(path, "xb") as out:
+        try:
+            out.write(data)
+        except BaseException:
+            out.close()
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            raise
+
+
+def _replace_with(path, data, umask):
     """--force: write a new temporary file next to path, then swap it into place. Replacing the folder entry
     (instead of opening the old file for writing) means a hard link already at path is replaced itself, so
     the file it shares data with outside the output folder is never written. (A symlink was already
@@ -393,7 +414,7 @@ def _replace_with(path, data):
         with os.fdopen(fd, "wb") as out:
             out.write(data)
         if os.name == "posix":  # mkstemp makes 0600; give the file the permissions a normal write would
-            os.chmod(tmp, 0o666 & ~_umask())
+            os.chmod(tmp, 0o666 & ~umask)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -404,7 +425,7 @@ def _replace_with(path, data):
 
 
 def _by_name(archive, needle):
-    """Matching entries by key (lower case, no empty parts); a name stored twice stops the run."""
+    """Matching entries by name_key; a name stored twice stops the run."""
     out = {}
     for e in archive.entries:
         k = e["key"]

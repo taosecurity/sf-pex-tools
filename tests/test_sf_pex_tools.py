@@ -416,14 +416,22 @@ class Ba2Extract(Temp):
     def test_name_key(self):
         self.assertEqual(bx.name_key("./Textures//a.DDS"), bx.name_key("textures/A.dds"))
         self.assertNotEqual(bx.name_key("textures/straße.dds"), bx.name_key("textures/strasse.dds"))
+        self.assertNotEqual(bx.name_key("a/ı.txt"), bx.name_key("a/i.txt"))  # dotless i stays itself
+        self.assertEqual(pc._shown("./Scripts//MyMod/X.pex"), "MyMod/X.pex")
         self.assertEqual(pc._key("Scripts//MyMod/X.pex"), pc._key("mymod/x.PEX"))
 
     def test_extract_skips_a_clash_between_file_and_folder(self):
         path = self.write("clash.ba2", writer.gnrl([("a", b"file"), ("a/b.txt", b"inside"), ("c.txt", b"ok")]))
         code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
         self.assertEqual(code, 0, out)
-        self.assertIn("skipped (can't make its folder", out)
+        self.assertIn("skipped (a file is in the way of its folder", out)
         self.assertIn("2 file(s) extracted, 1 skipped", out)
+
+    def test_a_failed_write_leaves_no_partial_file(self):
+        target = os.path.join(self.tmp, "half.bin")
+        with self.assertRaises(TypeError):
+            bx._write_exclusive(target, "not bytes")  # write() fails after the file was created
+        self.assertFalse(os.path.lexists(target))
 
     @unittest.skipUnless(os.name == "posix", "file permissions are POSIX only")
     def test_force_keeps_normal_permissions(self):
