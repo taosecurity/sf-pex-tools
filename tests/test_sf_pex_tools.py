@@ -339,6 +339,8 @@ class Ba2Extract(Temp):
         root = os.path.realpath(os.path.abspath(os.sep))
         self.assertEqual(bx.safe_target(root, "a/b.txt"), os.path.join(root, "a", "b.txt"))
         self.assertIsNone(bx.safe_target(root, "/"))  # nothing left once empty parts go: never the root itself
+        self.assertIsNone(bx.safe_target(root, "../b.txt"))
+        self.assertIsNone(bx.safe_target(root, "a/../../b.txt"))
 
     def test_link_inside_the_output_folder_pointing_outside_is_refused(self):
         base = os.path.realpath(os.path.join(self.tmp, "out"))
@@ -365,8 +367,8 @@ class Ba2Extract(Temp):
         code, out, _ = run(bx.main, "list", path)
         self.assertEqual(out.count("(name stored more than once)"), 2)
 
-    def test_diff_still_finds_damage_when_sizes_differ(self):
-        good = self.write("g.ba2", writer.gnrl([("x.txt", b"short")]))
+    def test_diff_finds_damage_when_sizes_match(self):
+        good = self.write("g.ba2", writer.gnrl([("x.txt", b"same-size text!!")]))
         data = bytearray(writer.gnrl([("x.txt", b"much longer text")]))
         start = 24 + 8 + 36  # header (version 2) + one record: the packed data starts here
         data[start:start + 4] = b"\xff\xff\xff\xff"
@@ -392,7 +394,31 @@ class Ba2Extract(Temp):
         b = self.write("s2.ba2", writer.gnrl([("x.txt", b"much longer text")]))
         code, out, _ = run(bx.main, "diff", a, b)
         self.assertEqual(code, 1)
-        self.assertIn("x.txt  (5 -> 16 bytes)", out)
+        self.assertIn("x.txt  (5 -> 16 bytes, stated sizes)", out)
+
+    def test_extract_force_replaces_a_hard_link_instead_of_writing_through_it(self):
+        outside = self.write("outside.txt", b"keep me")
+        out_dir = os.path.join(self.tmp, "o")
+        os.makedirs(out_dir)
+        try:
+            os.link(outside, os.path.join(out_dir, "x.txt"))
+        except (OSError, NotImplementedError):
+            self.skipTest("this file system can't make hard links")
+        path = self.write("h.ba2", writer.gnrl([("x.txt", b"from the archive")]))
+        code, out, _ = run(bx.main, "extract", path, out_dir)
+        self.assertIn("use --force", out)
+        code, out, _ = run(bx.main, "extract", path, out_dir, "--force")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(read(outside), b"keep me")
+        self.assertEqual(read(os.path.join(out_dir, "x.txt")), b"from the archive")
+        self.assertEqual([n for n in os.listdir(out_dir) if n.startswith(".ba2x-")], [])
+
+    def test_names_spelled_differently_count_as_duplicates(self):
+        path = self.write("sp.ba2", writer.gnrl([("Textures/a.dds", b"1"), ("textures//A.dds", b"2"),
+                                                  ("/other.txt", b"3")]))
+        code, out, _ = run(bx.main, "extract", path, os.path.join(self.tmp, "o"))
+        self.assertIn("1 file(s) extracted, 2 skipped", out)
+        self.assertEqual(run(bx.main, "diff", path, path)[0], 2)
 
     def test_damaged_archives(self):
         good = writer.gnrl([("a.txt", b"a" * 1000)])

@@ -93,7 +93,8 @@ python ba2_extract.py list "MyMod - Main.ba2" .pex
 python ba2_extract.py extract "MyMod - Main.ba2" out QuestScript
 ```
 
-Files keep their stored paths below `out`. Files that are already there are skipped unless you add `--force`.
+Files keep their stored paths below `out`. Files that are already there are skipped unless you add `--force`,
+which replaces them (a link already in the folder is replaced itself, never written through).
 
 **What changed between two versions of an archive?**
 
@@ -101,8 +102,10 @@ Files keep their stored paths below `out`. Files that are already there are skip
 python ba2_extract.py diff "MyMod 1.0 - Main.ba2" "MyMod 1.1 - Main.ba2"
 ```
 
-It lists files that are new, removed and changed, comparing their unpacked content. A rebuilt script always shows
-as changed, so use `pex_compare.py` on the archives to see whether its code changed.
+It lists files that are new, removed and changed, comparing their unpacked content. A file whose size (as the
+archive states it) changed is listed as changed without being unpacked, which keeps big archives fast; those
+lines say `stated sizes`. A rebuilt script always shows as changed, so use `pex_compare.py` on the archives to
+see whether its code changed.
 
 **Machine-readable results:** `pex_compare.py compare ... --json` prints the result as JSON (each script's status
 and diff, counts, and the exit code).

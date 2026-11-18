@@ -20,6 +20,8 @@ mods.
   Game Pass Data folders.
 - The tools read archives from strangers with care. They check sizes and offsets, stop unpacking at the stated
   size, apply a `--max-size` limit, skip unsafe stored names (including paths through a link that points out of
-  the output folder), don't overwrite files without `--force`, and show control characters as `\xNN`. Names an
+  the output folder), don't overwrite files without `--force` (which swaps in a new file, so it never writes
+  through a hard link or symlink), and show control characters as `\xNN`.
+- `diff` lists a file whose stated size changed as changed without unpacking it (marked `stated sizes`). Names an
   archive stores twice (ignoring case) are marked by `list`, skipped by `extract` and stop `diff`.
 - `--verbose` and `--log <file>` write a troubleshooting log.

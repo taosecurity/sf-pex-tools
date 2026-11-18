@@ -435,7 +435,7 @@ def main(argv=None):
     common.add_argument("--log", metavar="FILE", help="append the same log to FILE")
     p = _Parser(prog="pex_compare.py", description="Compare compiled Papyrus scripts by meaning, not by bytes. "
                 "Options go after the command name.",
-                epilog="Exit codes: 0 all equivalent, 1 differences found, 2 unreadable file or bad arguments.")
+                epilog="Exit codes: 0 all equivalent, 1 differences found, 2 unreadable file, DUPLICATE name or bad arguments.")
     p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     sub = p.add_subparsers(dest="cmd", metavar="command", parser_class=_Parser)
     s = sub.add_parser("dump", parents=[common], help="print one script's listing")

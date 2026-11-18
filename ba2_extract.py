@@ -28,6 +28,7 @@ import os
 import re
 import struct
 import sys
+import tempfile
 import zlib
 
 VERSION = "0.1.0"
@@ -202,13 +203,14 @@ class Archive:
         for e in self.entries:
             (n,) = struct.unpack("<H", self._need(2, "name table"))
             e["name"] = self._need(n, "name table").decode("utf-8", "replace").replace("\\", "/")
-        # The game looks names up without regard to case, so two entries whose names differ only in case
-        # are ambiguous: list shows them, extract skips them, diff stops.
+            # The same file however it is spelled: no empty parts ("a//b", "/a"), case folded.
+            e["key"] = "/".join(p for p in e["name"].split("/") if p).casefold()
+        # The game looks names up without regard to case, so two entries with the same key are ambiguous:
+        # list shows them, extract skips them, diff stops.
         seen = set()
         self.duplicates = set()
         for e in self.entries:
-            k = e["name"].lower()
-            (self.duplicates if k in seen else seen).add(k)
+            (self.duplicates if e["key"] in seen else seen).add(e["key"])
         if self.duplicates:
             log(f"{self.path}: {len(self.duplicates)} name(s) stored more than once (ignoring case)")
         for e in self.entries:
@@ -305,7 +307,7 @@ def cmd_list(archive, needle):
         for e in a.entries:
             if needle in e["name"].lower():
                 extra = f"  {e['w']}x{e['h']} fmt {e['fmt']}" if e["dx10"] else ""
-                if e["name"].lower() in a.duplicates:
+                if e["key"] in a.duplicates:
                     extra += "  (name stored more than once)"
                 say(f"{e['size']:>10}  {e['name']}{extra}")
     return 0
@@ -318,7 +320,7 @@ def cmd_extract(archive, out_dir, needle, force):
         for e in a.entries:
             if needle not in e["name"].lower():
                 continue
-            if e["name"].lower() in a.duplicates:
+            if e["key"] in a.duplicates:
                 say(f"skipped (the archive stores this name more than once, ignoring case): {e['name']!r}")
                 skipped += 1
                 continue
@@ -330,13 +332,11 @@ def cmd_extract(archive, out_dir, needle, force):
                 continue
             data = a.read(e)
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            try:
-                with open(path, "wb" if force else "xb") as out:
-                    out.write(data)
-            except FileExistsError:
+            if os.path.lexists(path) and not force:
                 say(f"skipped (already there; use --force to replace it): {path}")
                 skipped += 1
                 continue
+            _write_new(path, data)
             log(f"wrote {path} ({len(data)} bytes, {len(e['chunks'])} chunk(s))")
             say(f"extracted {e['name']} ({len(data)} bytes)")
             n += 1
@@ -344,12 +344,29 @@ def cmd_extract(archive, out_dir, needle, force):
     return 0
 
 
+def _write_new(path, data):
+    """Write to a new temporary file next to path, then swap it into place. Replacing the folder entry
+    (instead of opening the old file for writing) means a hard link or symlink already sitting at path is
+    replaced itself, and whatever it pointed to outside the output folder is never written."""
+    fd, tmp = tempfile.mkstemp(prefix=".ba2x-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _by_name(archive, needle):
-    """Matching entries by lower-case name; a name stored twice (ignoring case) stops the run."""
+    """Matching entries by key (lower case, no empty parts); a name stored twice stops the run."""
     out = {}
     for e in archive.entries:
-        k = e["name"].lower()
-        if needle not in k:
+        k = e["key"]
+        if needle not in e["name"].lower():
             continue
         if k in archive.duplicates:
             raise BA2Error(f"{archive.path}: two stored files have the name {e['name']!r} (ignoring case); "
@@ -367,13 +384,18 @@ def cmd_diff(a_path, b_path, needle):
         removed = sorted(a[k]["name"] for k in a.keys() - b.keys())
         changed, same = [], 0
         for k in sorted(a.keys() & b.keys()):
-            # Both are always unpacked, even when the stated sizes differ, so damage is still found.
-            da, db = fa.read(a[k]), fb.read(b[k])
-            is_same = da == db
+            if a[k]["size"] != b[k]["size"]:
+                # Changed by its stated size: not unpacked (fast on big archives). Damage inside such a
+                # file is found by extract or pex_compare, not here.
+                is_same = False
+                changed.append(f"{b[k]['name']}  ({a[k]['size']} -> {b[k]['size']} bytes, stated sizes)")
+            else:
+                da, db = fa.read(a[k]), fb.read(b[k])
+                is_same = da == db
+                if not is_same:
+                    changed.append(f"{b[k]['name']}  ({len(da)} -> {len(db)} bytes)")
             if is_same:
                 same += 1
-            else:
-                changed.append(f"{b[k]['name']}  ({len(da)} -> {len(db)} bytes)")
             log(f"compared {k}: {'same' if is_same else 'changed'}")
     for label, items in (("new in B", new), ("removed (only in A)", removed), ("changed", changed)):
         say(f"{label}: {len(items)}")
