@@ -345,7 +345,7 @@ def cmd_extract(archive, out_dir, needle, force):
                 log(f"refused unsafe path {e['name']!r}")
                 skipped += 1
                 continue
-            # Every reason to skip is checked before unpacking, so skipped files cost nothing.
+            # The usual reasons to skip are checked before unpacking.
             if os.path.isdir(path):
                 say(f"skipped (a folder with this name is already there): {e['name']!r}")
                 skipped += 1
@@ -354,6 +354,7 @@ def cmd_extract(archive, out_dir, needle, force):
                 say(f"skipped (already there; use --force to replace it): {path}")
                 skipped += 1
                 continue
+            data = a.read(e)  # before any folder is made, so a damaged entry leaves no empty folders
             try:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
             except OSError as err:  # a file already sits where one of its folders must go
@@ -361,7 +362,6 @@ def cmd_extract(archive, out_dir, needle, force):
                 log(f"makedirs failed for {path}: {err!r}")
                 skipped += 1
                 continue
-            data = a.read(e)
             try:
                 if force:
                     _replace_with(path, data, umask)
@@ -392,16 +392,18 @@ def _umask():
 def _write_exclusive(path, data):
     """Without --force: create the file only if nothing is there (atomic), and remove it again if the write
     fails partway (disk full, Ctrl+C), so a cut-off file is never left to be skipped as 'already there'."""
-    with open(path, "xb") as out:
+    out = open(path, "xb")  # FileExistsError here means nothing was created, so nothing is removed
+    try:
         try:
             out.write(data)
-        except BaseException:
-            out.close()
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            raise
+        finally:
+            out.close()  # a full disk often shows up here, when the buffer is flushed
+    except BaseException:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
 
 
 def _replace_with(path, data, umask):

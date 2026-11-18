@@ -433,6 +433,34 @@ class Ba2Extract(Temp):
             bx._write_exclusive(target, "not bytes")  # write() fails after the file was created
         self.assertFalse(os.path.lexists(target))
 
+    def test_a_failure_when_the_file_closes_leaves_no_partial_file(self):
+        """A full disk usually shows up when the buffer is flushed at close, not in write()."""
+        import builtins
+        target = os.path.join(self.tmp, "full.bin")
+        real_open = builtins.open
+
+        class FullDisk(io.BytesIO):
+            def close(self):
+                super().close()
+                raise OSError(28, "No space left on device")
+
+        def fake_open(path, mode="r", *a, **k):
+            if path == target:
+                real_open(path, mode).close()  # the file is created, as a real open would
+                return FullDisk()
+            return real_open(path, mode, *a, **k)
+
+        bx.open = fake_open  # module-level name lookup finds this before the builtin
+        try:
+            with self.assertRaises(OSError):
+                bx._write_exclusive(target, b"data")
+        finally:
+            del bx.open
+        self.assertFalse(os.path.lexists(target))
+
+    def test_shown_name_keeps_a_lone_scripts(self):
+        self.assertEqual(pc._shown("Scripts"), "Scripts")
+
     @unittest.skipUnless(os.name == "posix", "file permissions are POSIX only")
     def test_force_keeps_normal_permissions(self):
         path = self.write("p.ba2", writer.gnrl([("x.txt", b"data")]))

@@ -305,7 +305,7 @@ def _key(rel):
 def _shown(rel):
     """The same path as shown in results: the same parts as the key, original spelling, no leading 'Scripts/'."""
     parts = ba2_extract.name_parts(rel)
-    if parts and parts[0].lower() == "scripts":
+    if len(parts) > 1 and ba2_extract.name_key(parts[0]) == "SCRIPTS":  # the same rule as _key
         parts = parts[1:]
     return "/".join(parts)
 

@@ -201,8 +201,8 @@ Archives and scripts from other people are read with care: sizes and offsets are
 unpacking stops at the size the archive states, a file over `--max-size` is refused, stored names that would
 leave the output folder (`..`, drive letters, `:` streams, Windows device names, links inside the output folder
 that point elsewhere) are skipped, and control characters in names are shown as `\xNN`. The game looks names up
-without regard to case, so names an archive stores twice (ignoring case) are marked by `list`, skipped by
-`extract` and stop `diff`.
+without regard to the case of A to Z, so names an archive stores twice (ignoring that case, and empty or `.`
+parts such as `a//b` or `./a`) are marked by `list`, skipped by `extract` and stop `diff`.
 
 ## Limits
 
