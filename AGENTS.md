@@ -5,7 +5,7 @@ sf-pex-tools 0.1.0 before release. The [README](README.md) has the full descript
 
 ## 1. What it is for
 
-Two command-line scripts for Starfield and Fallout 4 mod authors:
+sf-pex-tools has two command-line scripts for Starfield and Fallout 4 mod authors:
 
 - `pex_compare.py` compares compiled Papyrus scripts (`.pex`) by meaning. Two builds of the same source never
   match byte for byte (the compiler reorders its output on every run), so a checksum or byte compare is useless.
